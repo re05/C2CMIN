@@ -1,35 +1,36 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { createBrowserRouter, RouterProvider, Link, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider, Link, Navigate, useNavigate } from 'react-router-dom'
 
-const AUTH_URL    = import.meta.env.VITE_AUTH_URL    || 'http://localhost:4000'
+const AUTH_URL = import.meta.env.VITE_AUTH_URL || 'http://localhost:4000'
 const LISTING_URL = import.meta.env.VITE_LISTING_URL || 'http://localhost:4010'
-const ORDER_URL   = import.meta.env.VITE_ORDER_URL   || 'http://localhost:4020'
+const ORDER_URL = import.meta.env.VITE_ORDER_URL || 'http://localhost:4020'
 
 function saveToken(t){ localStorage.setItem('token', t) }
 function getToken(){ return localStorage.getItem('token') }
-function authHeader(){ const t=getToken(); return t ? { Authorization: 'Bearer ' + t } : {} }
+function clearToken(){ localStorage.removeItem('token') }
+function authHeader(){
+  const t = getToken()
+  return t ? { 'Authorization': 'Bearer ' + t } : {}
+}
 
-// 認証必須レイアウト（未ログインなら /login に飛ばす）
 function Layout({children}){
-  const loc = useLocation()
   const [me,setMe] = React.useState(null)
-  const [checked,setChecked] = React.useState(false)
 
   React.useEffect(()=>{
     const t = getToken()
-    if(!t){ setChecked(true); return }
-    fetch(`${AUTH_URL}/me`, { headers: { ...authHeader() }})
+    if(!t){ setMe(null); return }
+    fetch(AUTH_URL + '/me', { headers: { ...authHeader() } })
       .then(r => r.ok ? r.json() : null)
-      .then(u => { setMe(u); setChecked(true) })
-      .catch(() => { setMe(null); setChecked(true) })
+      .then(setMe)
+      .catch(()=>setMe(null))
   },[])
 
-  // 未チェック中は軽いプレースホルダ
-  if(!checked) return <div style={{padding:24}}>読み込み中...</div>
-
-  // 未ログイン or /me 失敗 → /login
-  if(!me) return <Navigate to="/login" state={{ from: loc.pathname }} replace />
+  function onLogout(){
+    clearToken()
+    setMe(null)
+    window.location.href = '/login'
+  }
 
   return (
     <div style={{maxWidth:900, margin:'24px auto', fontFamily:'system-ui', padding:'0 12px'}}>
@@ -37,21 +38,23 @@ function Layout({children}){
         <Link to="/">マイページ</Link>
         <Link to="/listings">出品一覧</Link>
         <Link to="/sell">出品</Link>
-        {me.role==='admin' && <Link to="/admin">管理</Link>}
-        <span style={{marginLeft:'auto', fontSize:14, color:'#555'}}>
-          {me.email}（{me.role==='admin'?'管理者':'ユーザー'}）
-        </span>
+        <Link to="/admin">管理</Link>
+        <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8}}>
+          {!me && <Link to="/login">ログイン</Link>}
+          {me && (
+            <>
+              <span>ログイン中: {me.email} ({me.role})</span>
+              <button style={{padding:'4px 8px', cursor:'pointer'}} onClick={onLogout}>ログアウト</button>
+            </>
+          )}
+        </div>
       </nav>
-      <div style={{background:'#fafafa', padding:16, borderRadius:8, boxShadow:'0 0 6px rgba(0,0,0,0.1)'}}>
-        {children(me)}
-      </div>
+      <hr/>
+      {children}
     </div>
   )
 }
 
-// ---- ページ ----
-
-// Login は Layout で包まない（未ログインでも表示させるため）
 function Login(){
   const nav = useNavigate()
   const [email,setEmail] = React.useState('test@test.com')
@@ -61,186 +64,249 @@ function Login(){
   async function onLogin(e){
     e.preventDefault()
     setErr('')
-    const r = await fetch(`${AUTH_URL}/login`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({email,password})
-    })
-    if(!r.ok){ setErr('ログインに失敗しました'); return }
-    const j = await r.json()
-    saveToken(j.token)
-    nav('/') // 成功時トップへ
+    try{
+      const r = await fetch(AUTH_URL + '/login',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({email,password})
+      })
+      if(!r.ok){
+        const body = await r.text().catch(()=> '')
+        console.error('login error', r.status, body)
+        setErr('ログインに失敗しました')
+        return
+      }
+      const j = await r.json()
+      saveToken(j.token)
+      nav('/')
+    }catch(e){
+      console.error(e)
+      setErr('通信エラーが発生しました')
+    }
   }
 
   return (
-    <div style={{maxWidth:380, margin:'64px auto', fontFamily:'system-ui', padding:'0 12px'}}>
+    <Layout>
       <h2>ログイン</h2>
       <form onSubmit={onLogin}>
         <div style={{margin:'8px 0'}}>
           <label>メールアドレス</label><br/>
-          <input style={{padding:'8px',width:'100%'}} placeholder="メールアドレス"
-                 value={email} onChange={e=>setEmail(e.target.value)} />
+          <input
+            style={{padding:'8px',width:'260px'}}
+            placeholder="メールアドレス"
+            value={email}
+            onChange={e=>setEmail(e.target.value)}
+          />
         </div>
         <div style={{margin:'8px 0'}}>
           <label>パスワード</label><br/>
-          <input type="password" style={{padding:'8px',width:'100%'}} placeholder="パスワード"
-                 value={password} onChange={e=>setPassword(e.target.value)} />
+          <input
+            style={{padding:'8px',width:'260px'}}
+            type="password"
+            placeholder="パスワード"
+            value={password}
+            onChange={e=>setPassword(e.target.value)}
+          />
         </div>
-        <button style={{padding:'10px 16px',cursor:'pointer'}}>ログイン</button>
+        <button style={{padding:'8px 16px',cursor:'pointer'}}>ログイン</button>
       </form>
-      {err && <p style={{color:'crimson'}}>{err}</p>}
-      <p style={{marginTop:8, fontSize:13, color:'#666'}}>デモ: test@test.com / pass</p>
-    </div>
+      <p style={{marginTop:8,fontSize:12,color:'#666'}}>デモ: test@test.com / pass</p>
+      {err && <p style={{color:'red'}}>{err}</p>}
+    </Layout>
   )
 }
 
 function マイページ(){
-  return (
-    <Layout>
-      {(me)=>(
-        <>
-          <h2>マイ出品一覧</h2>
-          <MyListings me={me}/>
-        </>
-      )}
-    </Layout>
-  )
-}
-
-function MyListings({me}){
   const [mine,setMine] = React.useState([])
+
   React.useEffect(()=>{
-    fetch(`${LISTING_URL}/listings/mine`, { headers:{...authHeader()} })
-      .then(r=>r.ok?r.json():[])
+    fetch(LISTING_URL + '/listings/mine',{ headers:{...authHeader()} })
+      .then(r=> r.ok ? r.json() : [])
       .then(setMine)
       .catch(()=>setMine([]))
   },[])
-  if(mine.length===0) return <p>まだ出品がありません</p>
+
   return (
-    <>
-      {mine.map(x=> <div key={x.id}>#{x.id} {x.title} ¥{x.price} [{x.status}]</div>)}
-    </>
+    <Layout>
+      <h2>My 出品一覧</h2>
+      {mine.length === 0 && <p>まだ出品がありません。</p>}
+      {mine.map(x=> (
+        <div key={x.id}>
+          #{x.id} {x.title} ¥{x.price} [{x.status}]
+        </div>
+      ))}
+    </Layout>
   )
 }
 
 function 出品一覧(){
+  const [items,setItems] = React.useState([])
+  const [me,setMe] = React.useState(null)
+
+  React.useEffect(()=>{
+    fetch(LISTING_URL + '/listings')
+      .then(r=>r.json())
+      .then(setItems)
+    const t = getToken()
+    if(t){
+      fetch(AUTH_URL + '/me',{ headers:{...authHeader()} })
+        .then(r=>r.ok ? r.json() : null)
+        .then(setMe)
+    }
+  },[])
+
+  async function buy(id){
+    const r = await fetch(ORDER_URL + '/orders',{
+      method:'POST',
+      headers:{'Content-Type':'application/json',...authHeader()},
+      body: JSON.stringify({listingId: id})
+    })
+    if(r.ok){
+      alert('購入しました')
+      location.reload()
+    } else {
+      alert('購入できません')
+    }
+  }
+
+  async function del(id){
+    const r = await fetch(LISTING_URL + '/listings/' + id,{
+      method:'DELETE',
+      headers:{...authHeader()}
+    })
+    if(r.ok){
+      alert('削除しました')
+      location.reload()
+    } else {
+      alert('削除できません')
+    }
+  }
+
   return (
     <Layout>
-      {(me)=> <ListingsBody me={me}/> }
-    </Layout>
-  )
-}
-function ListingsBody({me}){
-  const [items,setItems] = React.useState([])
-  React.useEffect(()=>{
-    fetch(`${LISTING_URL}/listings`).then(r=>r.json()).then(setItems)
-  },[])
-  async function buy(id){
-    const r = await fetch(`${ORDER_URL}/orders`,{
-      method:'POST', headers:{'Content-Type':'application/json',...authHeader()},
-      body: JSON.stringify({listingId:id})
-    })
-    alert(r.ok?'購入しました':'購入できません')
-    if(r.ok) location.reload()
-  }
-  async function del(id){
-    const r = await fetch(`${LISTING_URL}/listings/${id}`,{ method:'DELETE', headers:{...authHeader()} })
-    alert(r.ok?'削除しました':'削除できません')
-    if(r.ok) location.reload()
-  }
-  return (
-    <>
       <h2>出品一覧</h2>
-      {items.map(x=>
-        <div key={x.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #eee'}}>
-          <span>#{x.id} {x.title} ¥{x.price} [{x.status}] {me && me.id===x.seller_id && <b>自分の出品</b>}</span>
-          {me && me.id===x.seller_id && x.status==='Active' && <button onClick={()=>del(x.id)}>削除</button>}
-          {(!me || me.id!==x.seller_id) && x.status==='Active' && <button onClick={()=>buy(x.id)}>購入</button>}
+      {items.map(x=> (
+        <div key={x.id} style={{display:'flex', gap:8, alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee'}}>
+          <span>
+            #{x.id} {x.title} ¥{x.price} [{x.status}] {me && me.id===x.seller_id && <b>自分の出品</b>}
+          </span>
+          {me && me.id===x.seller_id && x.status==='Active' && (
+            <button onClick={()=>del(x.id)}>削除</button>
+          )}
+          {(!me || me.id!==x.seller_id) && x.status==='Active' && (
+            <button onClick={()=>buy(x.id)}>購入</button>
+          )}
           {x.status!=='Active' && <span>購入不可</span>}
         </div>
-      )}
-    </>
+      ))}
+    </Layout>
   )
 }
 
 function 出品(){
-  return (
-    <Layout>
-      {()=> <SellForm/>}
-    </Layout>
-  )
-}
-function SellForm(){
-  const [title,setTitle] = React.useState('')
-  const [price,setPrice] = React.useState('')
+  const [title,setTitle]=React.useState('サンプル')
+  const [price,setPrice]=React.useState(1000)
+
   async function submit(e){
     e.preventDefault()
-    const r = await fetch(`${LISTING_URL}/listings`,{
-      method:'POST', headers:{'Content-Type':'application/json',...authHeader()},
+    const r = await fetch(LISTING_URL + '/listings',{
+      method:'POST',
+      headers:{'Content-Type':'application/json',...authHeader()},
       body: JSON.stringify({title,price:Number(price)})
     })
-    alert(r.ok?'出品しました':'失敗')
-    if(r.ok){ setTitle(''); setPrice('') }
+    if(r.ok){
+      alert('出品しました')
+      setTitle('')
+      setPrice(0)
+    } else {
+      alert('失敗しました')
+    }
   }
+
   return (
-    <>
+    <Layout>
       <h2>出品</h2>
       <form onSubmit={submit}>
         <div style={{margin:'8px 0'}}>
           <label>タイトル</label><br/>
-          <input style={{padding:'8px',width:'260px'}} value={title} onChange={e=>setTitle(e.target.value)} placeholder="商品タイトル"/>
+          <input
+            style={{padding:'8px',width:'260px'}}
+            placeholder="タイトル"
+            value={title}
+            onChange={e=>setTitle(e.target.value)}
+          />
         </div>
         <div style={{margin:'8px 0'}}>
           <label>価格</label><br/>
-          <input type="number" style={{padding:'8px',width:'260px'}} value={price} onChange={e=>setPrice(e.target.value)} placeholder="価格"/>
+          <input
+            style={{padding:'8px',width:'260px'}}
+            type="number"
+            placeholder="価格"
+            value={price}
+            onChange={e=>setPrice(e.target.value)}
+          />
         </div>
-        <button style={{padding:'8px 16px'}}>出品する</button>
+        <button>作成</button>
       </form>
-    </>
+    </Layout>
   )
 }
 
 function 管理(){
+  const [me,setMe]=React.useState(null)
+  const [items,setItems]=React.useState([])
+
+  React.useEffect(()=>{
+    const t = getToken()
+    if(!t){ setMe(null); return }
+    fetch(AUTH_URL + '/me',{ headers:{...authHeader()} })
+      .then(r=>r.ok ? r.json() : null)
+      .then(setMe)
+    fetch(LISTING_URL + '/listings?q=')
+      .then(r=>r.json())
+      .then(setItems)
+  },[])
+
+  if(!me) return <Navigate to="/login" />
+  if(me.role!=='admin') return <Navigate to="/" />
+
+  async function pause(id){
+    const r = await fetch(LISTING_URL + '/listings/' + id + '/pause',{
+      method:'PATCH',
+      headers:{...authHeader()}
+    })
+    if(r.ok){ location.reload() } else { alert('失敗しました') }
+  }
+
+  async function activate(id){
+    const r = await fetch(LISTING_URL + '/listings/' + id + '/activate',{
+      method:'PATCH',
+      headers:{...authHeader()}
+    })
+    if(r.ok){ location.reload() } else { alert('失敗しました') }
+  }
+
   return (
     <Layout>
-      {(me)=> {
-        if(me.role!=='admin') return <Navigate to="/" replace />
-        return <AdminBody/>
-      }}
+      <h2>管理</h2>
+      {items.map(x=> (
+        <div key={x.id} style={{display:'flex', gap:8, alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee'}}>
+          <span>#{x.id} {x.title} ¥{x.price} [{x.status}] seller:{x.seller_id}</span>
+          {x.status!=='Paused'
+            ? <button onClick={()=>pause(x.id)}>停止</button>
+            : <button onClick={()=>activate(x.id)}>再開</button>}
+        </div>
+      ))}
     </Layout>
   )
 }
-function AdminBody(){
-  const [items,setItems] = React.useState([])
-  React.useEffect(()=>{
-    fetch(`${LISTING_URL}/listings`).then(r=>r.json()).then(setItems)
-  },[])
-  async function toggle(id,act){
-    const r = await fetch(`${LISTING_URL}/listings/${id}/${act}`, { method:'PATCH', headers:{...authHeader()} })
-    alert(r.ok?'更新しました':'失敗')
-    if(r.ok) location.reload()
-  }
-  return (
-    <>
-      <h2>管理</h2>
-      {items.map(x=>
-        <div key={x.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #eee'}}>
-          <span>#{x.id} {x.title} ¥{x.price} [{x.status}] seller:{x.seller_id}</span>
-          {x.status!=='Paused'
-            ? <button onClick={()=>toggle(x.id,'pause')}>停止</button>
-            : <button onClick={()=>toggle(x.id,'activate')}>再開</button>}
-        </div>
-      )}
-    </>
-  )
-}
 
-// ルーティング
 const router = createBrowserRouter([
-  { path: '/login', element: <Login/> },
-  { path: '/', element: <マイページ/> },
-  { path: '/listings', element: <出品一覧/> },
-  { path: '/sell', element: <出品/> },
-  { path: '/admin', element: <管理/> },
+  { path: "/", element: <マイページ/> },
+  { path: "/login", element: <Login/> },
+  { path: "/listings", element: <出品一覧/> },
+  { path: "/sell", element: <出品/> },
+  { path: "/admin", element: <管理/> },
 ])
 
 createRoot(document.getElementById('root')).render(<RouterProvider router={router} />)
