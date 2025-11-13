@@ -270,21 +270,28 @@ function 取引一覧(){
         const h = { ...authHeader() };
 
         const meRes = await fetch(AUTH_URL + '/me',{ headers:h });
-        if(meRes.ok){
-          const meJson = await meRes.json();
-          setMe(meJson);
+        if(!meRes.ok){
+          setMe(null);
+          return;
         }
+        const meJson = await meRes.json();
+        setMe(meJson);
 
-        const [asBuyer, asSeller] = await Promise.all([
-          fetch(ORDER_URL + '/orders/buyer/me', { headers:h }).then(r=>r.ok ? r.json() : []),
-          fetch(ORDER_URL + '/orders/seller/me', { headers:h }).then(r=>r.ok ? r.json() : []),
-        ]);
-
-        const buyerWithRole  = asBuyer.map(o => ({...o, myRole:'buyer'}));
-        const sellerWithRole = asSeller.map(o => ({...o, myRole:'seller'}));
-        const combined = [...buyerWithRole, ...sellerWithRole];
-
-        setItems(combined);
+        // admin とそれ以外で取得先を切り替える
+        if(meJson.role === 'admin'){
+          const all = await fetch(ORDER_URL + '/orders/admin/all', { headers:h })
+            .then(r=>r.ok ? r.json() : []);
+          const adminView = all.map(o => ({...o, myRole:'admin'}));
+          setItems(adminView);
+        }else{
+          const [asBuyer, asSeller] = await Promise.all([
+            fetch(ORDER_URL + '/orders/buyer/me', { headers:h }).then(r=>r.ok ? r.json() : []),
+            fetch(ORDER_URL + '/orders/seller/me', { headers:h }).then(r=>r.ok ? r.json() : []),
+          ]);
+          const buyerWithRole  = asBuyer.map(o => ({...o, myRole:'buyer'}));
+          const sellerWithRole = asSeller.map(o => ({...o, myRole:'seller'}));
+          setItems([...buyerWithRole, ...sellerWithRole]);
+        }
       }catch(e){
         console.error(e);
         setItems([]);
@@ -343,13 +350,24 @@ function 取引一覧(){
   }
 
   function otherSideLabel(o, msg){
-    if(!me) return '相手';
+    if(!me) return 'ユーザー';
+    if(me.role === 'admin'){
+      // admin の監視用: 送り手のユーザーIDを出す
+      return `ユーザーID:${msg.sender_id}`;
+    }
     if(msg.sender_id === me.id) return '自分';
     return '相手';
   }
 
   async function sendMessage(orderId){
     const order = items.find(x => x.id === orderId);
+
+    // admin はメッセージ送信不可
+    if(me && me.role === 'admin'){
+      alert('admin はメッセージ送信はできません（閲覧のみ）。');
+      return;
+    }
+
     if(order && order.status === 'COMPLETED'){
       alert('取引完了後はメッセージを送れません。');
       return;
@@ -376,14 +394,17 @@ function 取引一覧(){
     setInputByOrder(prev => ({ ...prev, [orderId]: '' }));
   }
 
+  const title = me && me.role === 'admin' ? '全ての取引（管理用）' : '取引一覧';
+
   return (
     <Layout>
-      <h2>取引一覧</h2>
+      <h2>{title}</h2>
       {items.length === 0 && <p>関係する取引はまだありません。</p>}
       {items.map(o => {
         const msgs = messagesByOrder[o.id] || [];
         const input = inputByOrder[o.id] || '';
         const isCompleted = o.status === 'COMPLETED';
+        const isAdmin = me && me.role === 'admin';
 
         return (
           <div key={o.id} style={{
@@ -396,22 +417,29 @@ function 取引一覧(){
             gap:6
           }}>
             <div>
-              取引ID #{o.id} / {o.myRole === 'buyer' ? '購入側' : '出品側'} / {statusLabel(o.status)}
+              取引ID #{o.id} / {
+                o.myRole === 'admin'
+                  ? '管理者ビュー'
+                  : (o.myRole === 'buyer' ? '購入側' : '出品側')
+              } / {statusLabel(o.status)}
             </div>
             <div>
               商品: {o.title} ¥{o.price} 出品者ID:{o.seller_id} 購入者ID:{o.buyer_id}
             </div>
-            <div style={{marginTop:4}}>
-              {o.myRole === 'seller' && o.status === 'CREATED' && (
-                <button onClick={()=>action(o.id,'ship')}>発送済みにする</button>
-              )}
-              {o.myRole === 'buyer' && o.status === 'SHIPPING' && (
-                <button onClick={()=>action(o.id,'deliver')}>到着済みにする</button>
-              )}
-              {o.myRole === 'buyer' && o.status === 'DELIVERED' && (
-                <button onClick={()=>action(o.id,'complete')}>受け取り評価済みにする</button>
-              )}
-            </div>
+
+            {!isAdmin && (
+              <div style={{marginTop:4}}>
+                {o.myRole === 'seller' && o.status === 'CREATED' && (
+                  <button onClick={()=>action(o.id,'ship')}>発送済みにする</button>
+                )}
+                {o.myRole === 'buyer' && o.status === 'SHIPPING' && (
+                  <button onClick={()=>action(o.id,'deliver')}>到着済みにする</button>
+                )}
+                {o.myRole === 'buyer' && o.status === 'DELIVERED' && (
+                  <button onClick={()=>action(o.id,'complete')}>受け取り評価済みにする</button>
+                )}
+              </div>
+            )}
 
             <div style={{marginTop:8}}>
               <strong>取引メッセージ</strong>
@@ -437,7 +465,11 @@ function 取引一覧(){
                 ))}
               </div>
 
-              {isCompleted ? (
+              {isAdmin ? (
+                <div style={{marginTop:4, color:'#888'}}>
+                  管理者はメッセージの閲覧のみ可能です。
+                </div>
+              ) : isCompleted ? (
                 <div style={{marginTop:4, color:'#888'}}>
                   取引完了のため新しいメッセージは送れません。
                 </div>
@@ -465,6 +497,7 @@ function 取引一覧(){
     </Layout>
   );
 }
+
 
 
 

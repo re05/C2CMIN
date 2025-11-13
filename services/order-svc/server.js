@@ -299,9 +299,8 @@ app.get('/orders/:id/messages', authRequired, async (req,res)=>{
   if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
 
   try{
-    // 自分がこの取引の当事者（買い手 or 売り手）か確認
     const q1 = await pool.query(
-      `SELECT o.id, o.buyer_id, l.seller_id
+      `SELECT o.id, o.buyer_id, o.status, l.seller_id
        FROM orders o
        JOIN listings l ON o.listing_id = l.id
        WHERE o.id = $1`,
@@ -309,8 +308,12 @@ app.get('/orders/:id/messages', authRequired, async (req,res)=>{
     );
     if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
     const o = q1.rows[0];
-    if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
-      return res.status(403).json({error:'forbidden'});
+
+    // admin は全て閲覧可、通常ユーザーは当事者のみ
+    if(req.user.role !== 'admin'){
+      if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
+        return res.status(403).json({error:'forbidden'});
+      }
     }
 
     const q2 = await pool.query(
@@ -338,7 +341,6 @@ app.post('/orders/:id/messages', authRequired, async (req,res)=>{
   if(!body) return res.status(400).json({error:'empty'});
 
   try{
-    // 自分が当事者か確認しつつ、ステータスも取得
     const q1 = await pool.query(
       `SELECT o.id, o.buyer_id, o.status, l.seller_id
        FROM orders o
@@ -349,11 +351,17 @@ app.post('/orders/:id/messages', authRequired, async (req,res)=>{
     if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
     const o = q1.rows[0];
 
+    // admin は書き込み禁止（監視専用）
+    if(req.user.role === 'admin'){
+      return res.status(403).json({error:'admin_view_only'});
+    }
+
+    // 当事者チェック（買い手 or 売り手）
     if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
       return res.status(403).json({error:'forbidden'});
     }
 
-    // 取引完了後は新規メッセージ禁止
+    // 完了後は書き込み禁止
     if(o.status === 'COMPLETED'){
       return res.status(409).json({error:'completed'});
     }
@@ -366,6 +374,35 @@ app.post('/orders/:id/messages', authRequired, async (req,res)=>{
     );
 
     return res.status(201).json(q2.rows[0]);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+// admin 用：全ての取引一覧
+app.get('/orders/admin/all', authRequired, async (req,res)=>{
+  try{
+    if(req.user.role !== 'admin'){
+      return res.status(403).json({error:'forbidden'});
+    }
+
+    const q = await pool.query(
+      `SELECT
+         o.id,
+         o.status,
+         o.buyer_id,
+         o.listing_id,
+         o.created_at,
+         l.title,
+         l.price,
+         l.seller_id
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       ORDER BY o.id DESC`
+    );
+
+    return res.json(q.rows);
   }catch(e){
     console.error(e);
     return res.status(500).json({error:'server_error'});
