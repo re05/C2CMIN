@@ -38,7 +38,7 @@ function Layout({children}){
         <Link to="/">マイページ</Link>
         <Link to="/listings">出品一覧</Link>
         <Link to="/sell">出品</Link>
-        <Link to="/admin">管理</Link>
+        {me && me.role === 'admin' && <Link to="/admin">管理</Link>}
         <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8}}>
           {!me && <Link to="/login">ログイン</Link>}
           {me && (
@@ -54,6 +54,7 @@ function Layout({children}){
     </div>
   )
 }
+
 
 function Login(){
   const nav = useNavigate()
@@ -253,53 +254,118 @@ function 出品(){
 }
 
 function 管理(){
-  const [me,setMe]=React.useState(null)
-  const [items,setItems]=React.useState([])
+  // undefined: 読み込み中 / null: 未ログイン / object: ログイン済み
+  const [me,setMe] = React.useState(undefined);
+  const [items,setItems] = React.useState([]);
+  const [users,setUsers] = React.useState([]);
 
   React.useEffect(()=>{
-    const t = getToken()
-    if(!t){ setMe(null); return }
+    const t = getToken();
+    if(!t){
+      setMe(null);  // トークンがない＝未ログイン
+      return;
+    }
+
+    // 自分（admin かどうか）
     fetch(AUTH_URL + '/me',{ headers:{...authHeader()} })
-      .then(r=>r.ok ? r.json() : null)
-      .then(setMe)
+      .then(r => r.ok ? r.json() : null)
+      .then(u => {
+        setMe(u);
+        if(!u || u.role !== 'admin') return;
+        // admin だけユーザー一覧を取りに行く
+        fetch(AUTH_URL + '/admin/users',{ headers:{...authHeader()} })
+          .then(r => r.ok ? r.json() : [])
+          .then(setUsers);
+      });
+
+    // 出品一覧（これは誰でも見れる運営用）
     fetch(LISTING_URL + '/listings?q=')
-      .then(r=>r.json())
-      .then(setItems)
-  },[])
+      .then(r => r.json())
+      .then(setItems);
+  },[]);
 
-  if(!me) return <Navigate to="/login" />
-  if(me.role!=='admin') return <Navigate to="/" />
+  // ここからガード
+  if(me === undefined){
+    // まだ /me を取りに行っている途中
+    return (
+      <Layout>
+        <p>読み込み中です…</p>
+      </Layout>
+    );
+  }
 
-  async function pause(id){
+  if(me === null){
+    // トークン無し or /me 失敗
+    return <Navigate to="/login" />;
+  }
+
+  if(me.role !== 'admin'){
+    // admin ではない
+    return <Navigate to="/" />;
+  }
+
+  async function pauseListing(id){
     const r = await fetch(LISTING_URL + '/listings/' + id + '/pause',{
       method:'PATCH',
       headers:{...authHeader()}
-    })
-    if(r.ok){ location.reload() } else { alert('失敗しました') }
+    });
+    if(r.ok) location.reload(); else alert('失敗しました');
   }
 
-  async function activate(id){
+  async function activateListing(id){
     const r = await fetch(LISTING_URL + '/listings/' + id + '/activate',{
       method:'PATCH',
       headers:{...authHeader()}
-    })
-    if(r.ok){ location.reload() } else { alert('失敗しました') }
+    });
+    if(r.ok) location.reload(); else alert('失敗しました');
+  }
+
+  async function freezeUser(id){
+    const r = await fetch(AUTH_URL + '/admin/users/' + id + '/freeze',{
+      method:'PATCH',
+      headers:{...authHeader()}
+    });
+    if(r.ok) location.reload(); else alert('ユーザー凍結に失敗しました');
+  }
+
+  async function unfreezeUser(id){
+    const r = await fetch(AUTH_URL + '/admin/users/' + id + '/unfreeze',{
+      method:'PATCH',
+      headers:{...authHeader()}
+    });
+    if(r.ok) location.reload(); else alert('解除に失敗しました');
   }
 
   return (
     <Layout>
-      <h2>管理</h2>
+      <h2>運営管理</h2>
+
+      <h3 style={{marginTop:16}}>出品管理</h3>
       {items.map(x=> (
         <div key={x.id} style={{display:'flex', gap:8, alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee'}}>
           <span>#{x.id} {x.title} ¥{x.price} [{x.status}] seller:{x.seller_id}</span>
           {x.status!=='Paused'
-            ? <button onClick={()=>pause(x.id)}>停止</button>
-            : <button onClick={()=>activate(x.id)}>再開</button>}
+            ? <button onClick={()=>pauseListing(x.id)}>停止</button>
+            : <button onClick={()=>activateListing(x.id)}>再開</button>}
+        </div>
+      ))}
+
+      <h3 style={{marginTop:24}}>ユーザー管理</h3>
+      {users.map(u=> (
+        <div key={u.id} style={{display:'flex', gap:8, alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee'}}>
+          <span>#{u.id} {u.email} ({u.role}) {u.disabled && <b style={{color:'red'}}>凍結中</b>}</span>
+          {u.role === 'admin'
+            ? <span>管理者は凍結不可</span>
+            : (u.disabled
+              ? <button onClick={()=>unfreezeUser(u.id)}>凍結解除</button>
+              : <button onClick={()=>freezeUser(u.id)}>凍結</button>)}
         </div>
       ))}
     </Layout>
-  )
+  );
 }
+
+
 
 const router = createBrowserRouter([
   { path: "/", element: <マイページ/> },
