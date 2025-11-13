@@ -34,10 +34,11 @@ function Layout({children}){
 
   return (
     <div style={{maxWidth:900, margin:'24px auto', fontFamily:'system-ui', padding:'0 12px'}}>
-      <nav style={{display:'flex', gap:16, marginBottom:16, alignItems:'center', flexWrap:'wrap'}}>
+           <nav style={{display:'flex', gap:16, marginBottom:16, alignItems:'center', flexWrap:'wrap'}}>
         <Link to="/">マイページ</Link>
         <Link to="/listings">出品一覧</Link>
         <Link to="/sell">出品</Link>
+        {me && <Link to="/orders">取引</Link>}
         {me && me.role === 'admin' && <Link to="/admin">管理</Link>}
         <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8}}>
           {!me && <Link to="/login">ログイン</Link>}
@@ -253,6 +254,84 @@ function 出品(){
   )
 }
 
+function 取引一覧(){
+  const [items,setItems] = React.useState([]);
+
+  React.useEffect(()=>{
+    async function load(){
+      try{
+        const h = { ...authHeader() };
+        const [asBuyer, asSeller] = await Promise.all([
+          fetch(ORDER_URL + '/orders/buyer/me', { headers:h }).then(r=>r.ok ? r.json() : []),
+          fetch(ORDER_URL + '/orders/seller/me', { headers:h }).then(r=>r.ok ? r.json() : []),
+        ]);
+        const buyerWithRole  = asBuyer.map(o => ({...o, myRole:'buyer'}));
+        const sellerWithRole = asSeller.map(o => ({...o, myRole:'seller'}));
+        setItems([...buyerWithRole, ...sellerWithRole]);
+      }catch(e){
+        console.error(e);
+        setItems([]);
+      }
+    }
+    load();
+  },[]);
+
+  function statusLabel(s){
+    if(s === 'CREATED')   return '購入済み（発送待ち）';
+    if(s === 'SHIPPING')  return '発送中';
+    if(s === 'DELIVERED') return '到着済み（評価待ち）';
+    if(s === 'COMPLETED') return '取引完了';
+    return s;
+  }
+
+  async function action(id, kind){
+    let path = '';
+    if(kind === 'ship')     path = '/orders/' + id + '/ship';
+    if(kind === 'deliver')  path = '/orders/' + id + '/deliver';
+    if(kind === 'complete') path = '/orders/' + id + '/complete';
+    const r = await fetch(ORDER_URL + path,{
+      method:'PATCH',
+      headers:{ ...authHeader() }
+    });
+    if(r.ok){
+      alert('状態を更新しました');
+      location.reload();
+    }else{
+      alert('状態を更新できませんでした');
+    }
+  }
+
+  return (
+    <Layout>
+      <h2>取引一覧</h2>
+      {items.length === 0 && <p>関係する取引はまだありません。</p>}
+      {items.map(o => (
+        <div key={o.id} style={{borderBottom:'1px solid #eee', padding:'8px 0',
+          display:'flex', flexDirection:'column', gap:4}}>
+          <div>
+            取引ID #{o.id} / {o.myRole === 'buyer' ? '購入側' : '出品側'} / {statusLabel(o.status)}
+          </div>
+          <div>
+            商品: {o.title} ¥{o.price} 出品者ID:{o.seller_id} 購入者ID:{o.buyer_id}
+          </div>
+          <div style={{marginTop:4}}>
+            {o.myRole === 'seller' && o.status === 'CREATED' && (
+              <button onClick={()=>action(o.id,'ship')}>発送済みにする</button>
+            )}
+            {o.myRole === 'buyer' && o.status === 'SHIPPING' && (
+              <button onClick={()=>action(o.id,'deliver')}>到着済みにする</button>
+            )}
+            {o.myRole === 'buyer' && o.status === 'DELIVERED' && (
+              <button onClick={()=>action(o.id,'complete')}>受け取り評価済みにする</button>
+            )}
+          </div>
+        </div>
+      ))}
+    </Layout>
+  );
+}
+
+
 function 管理(){
   // undefined: 読み込み中 / null: 未ログイン / object: ログイン済み
   const [me,setMe] = React.useState(undefined);
@@ -372,7 +451,9 @@ const router = createBrowserRouter([
   { path: "/login", element: <Login/> },
   { path: "/listings", element: <出品一覧/> },
   { path: "/sell", element: <出品/> },
+  { path: "/orders", element: <取引一覧/> },
   { path: "/admin", element: <管理/> },
-])
+]);
+
 
 createRoot(document.getElementById('root')).render(<RouterProvider router={router} />)
