@@ -289,5 +289,90 @@ app.patch('/orders/:id/complete', authRequired, async (req,res)=>{
   }
 });
 
+// =========================
+// 取引メッセージ API
+// =========================
+
+// 取引メッセージ一覧
+app.get('/orders/:id/messages', authRequired, async (req,res)=>{
+  const id = Number(req.params.id);
+  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+
+  try{
+    // 自分がこの取引の当事者（買い手 or 売り手）か確認
+    const q1 = await pool.query(
+      `SELECT o.id, o.buyer_id, l.seller_id
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       WHERE o.id = $1`,
+      [id]
+    );
+    if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
+    const o = q1.rows[0];
+    if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
+      return res.status(403).json({error:'forbidden'});
+    }
+
+    const q2 = await pool.query(
+      `SELECT id, order_id, sender_id, body, created_at
+       FROM order_messages
+       WHERE order_id = $1
+       ORDER BY id ASC`,
+      [id]
+    );
+
+    return res.json(q2.rows);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+// 取引メッセージ投稿
+app.post('/orders/:id/messages', authRequired, async (req,res)=>{
+  const id = Number(req.params.id);
+  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+
+  const { text } = req.body || {};
+  const body = (text || '').trim();
+  if(!body) return res.status(400).json({error:'empty'});
+
+  try{
+    // 自分が当事者か確認しつつ、ステータスも取得
+    const q1 = await pool.query(
+      `SELECT o.id, o.buyer_id, o.status, l.seller_id
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       WHERE o.id = $1`,
+      [id]
+    );
+    if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
+    const o = q1.rows[0];
+
+    if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
+      return res.status(403).json({error:'forbidden'});
+    }
+
+    // 取引完了後は新規メッセージ禁止
+    if(o.status === 'COMPLETED'){
+      return res.status(409).json({error:'completed'});
+    }
+
+    const q2 = await pool.query(
+      `INSERT INTO order_messages(order_id, sender_id, body)
+       VALUES($1,$2,$3)
+       RETURNING id, order_id, sender_id, body, created_at`,
+      [id, req.user.uid, body]
+    );
+
+    return res.status(201).json(q2.rows[0]);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+
+
 const PORT = process.env.PORT || 4020;
 app.listen(PORT, ()=>console.log('listening on', PORT));

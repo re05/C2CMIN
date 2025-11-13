@@ -256,18 +256,35 @@ function 出品(){
 
 function 取引一覧(){
   const [items,setItems] = React.useState([]);
+  const [me,setMe] = React.useState(null);
+  const [messagesByOrder,setMessagesByOrder] = React.useState({});
+  const [inputByOrder,setInputByOrder] = React.useState({});
+
+  if(!getToken()){
+    return <Navigate to="/login" />;
+  }
 
   React.useEffect(()=>{
     async function load(){
       try{
         const h = { ...authHeader() };
+
+        const meRes = await fetch(AUTH_URL + '/me',{ headers:h });
+        if(meRes.ok){
+          const meJson = await meRes.json();
+          setMe(meJson);
+        }
+
         const [asBuyer, asSeller] = await Promise.all([
           fetch(ORDER_URL + '/orders/buyer/me', { headers:h }).then(r=>r.ok ? r.json() : []),
           fetch(ORDER_URL + '/orders/seller/me', { headers:h }).then(r=>r.ok ? r.json() : []),
         ]);
+
         const buyerWithRole  = asBuyer.map(o => ({...o, myRole:'buyer'}));
         const sellerWithRole = asSeller.map(o => ({...o, myRole:'seller'}));
-        setItems([...buyerWithRole, ...sellerWithRole]);
+        const combined = [...buyerWithRole, ...sellerWithRole];
+
+        setItems(combined);
       }catch(e){
         console.error(e);
         setItems([]);
@@ -275,6 +292,30 @@ function 取引一覧(){
     }
     load();
   },[]);
+
+  React.useEffect(()=>{
+    async function loadMessages(){
+      const h = { ...authHeader() };
+      const next = {};
+      for(const o of items){
+        try{
+          const r = await fetch(ORDER_URL + '/orders/' + o.id + '/messages', { headers:h });
+          if(r.ok){
+            next[o.id] = await r.json();
+          }else{
+            next[o.id] = [];
+          }
+        }catch(e){
+          console.error(e);
+          next[o.id] = [];
+        }
+      }
+      setMessagesByOrder(next);
+    }
+    if(items.length > 0){
+      loadMessages();
+    }
+  },[items]);
 
   function statusLabel(s){
     if(s === 'CREATED')   return '購入済み（発送待ち）';
@@ -301,35 +342,131 @@ function 取引一覧(){
     }
   }
 
+  function otherSideLabel(o, msg){
+    if(!me) return '相手';
+    if(msg.sender_id === me.id) return '自分';
+    return '相手';
+  }
+
+  async function sendMessage(orderId){
+    const order = items.find(x => x.id === orderId);
+    if(order && order.status === 'COMPLETED'){
+      alert('取引完了後はメッセージを送れません。');
+      return;
+    }
+
+    const raw = inputByOrder[orderId] || '';
+    const text = raw.trim();
+    if(!text) return;
+
+    const r = await fetch(ORDER_URL + '/orders/' + orderId + '/messages',{
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', ...authHeader() },
+      body: JSON.stringify({ text })
+    });
+    if(!r.ok){
+      alert('メッセージ送信に失敗しました');
+      return;
+    }
+    const msg = await r.json();
+    setMessagesByOrder(prev => ({
+      ...prev,
+      [orderId]: [...(prev[orderId] || []), msg]
+    }));
+    setInputByOrder(prev => ({ ...prev, [orderId]: '' }));
+  }
+
   return (
     <Layout>
       <h2>取引一覧</h2>
       {items.length === 0 && <p>関係する取引はまだありません。</p>}
-      {items.map(o => (
-        <div key={o.id} style={{borderBottom:'1px solid #eee', padding:'8px 0',
-          display:'flex', flexDirection:'column', gap:4}}>
-          <div>
-            取引ID #{o.id} / {o.myRole === 'buyer' ? '購入側' : '出品側'} / {statusLabel(o.status)}
+      {items.map(o => {
+        const msgs = messagesByOrder[o.id] || [];
+        const input = inputByOrder[o.id] || '';
+        const isCompleted = o.status === 'COMPLETED';
+
+        return (
+          <div key={o.id} style={{
+            border:'1px solid #ddd',
+            borderRadius:4,
+            padding:8,
+            marginBottom:12,
+            display:'flex',
+            flexDirection:'column',
+            gap:6
+          }}>
+            <div>
+              取引ID #{o.id} / {o.myRole === 'buyer' ? '購入側' : '出品側'} / {statusLabel(o.status)}
+            </div>
+            <div>
+              商品: {o.title} ¥{o.price} 出品者ID:{o.seller_id} 購入者ID:{o.buyer_id}
+            </div>
+            <div style={{marginTop:4}}>
+              {o.myRole === 'seller' && o.status === 'CREATED' && (
+                <button onClick={()=>action(o.id,'ship')}>発送済みにする</button>
+              )}
+              {o.myRole === 'buyer' && o.status === 'SHIPPING' && (
+                <button onClick={()=>action(o.id,'deliver')}>到着済みにする</button>
+              )}
+              {o.myRole === 'buyer' && o.status === 'DELIVERED' && (
+                <button onClick={()=>action(o.id,'complete')}>受け取り評価済みにする</button>
+              )}
+            </div>
+
+            <div style={{marginTop:8}}>
+              <strong>取引メッセージ</strong>
+              <div style={{
+                border:'1px solid #eee',
+                borderRadius:4,
+                padding:6,
+                maxHeight:150,
+                overflowY:'auto',
+                marginTop:4
+              }}>
+                {msgs.length === 0 && <div style={{color:'#888'}}>まだメッセージはありません。</div>}
+                {msgs.map(m => (
+                  <div key={m.id} style={{marginBottom:4}}>
+                    <span style={{fontWeight:'bold'}}>
+                      {otherSideLabel(o,m)}
+                    </span>
+                    <span style={{fontSize:12, color:'#888', marginLeft:4}}>
+                      {m.created_at && new Date(m.created_at).toLocaleString()}
+                    </span>
+                    <div>{m.body}</div>
+                  </div>
+                ))}
+              </div>
+
+              {isCompleted ? (
+                <div style={{marginTop:4, color:'#888'}}>
+                  取引完了のため新しいメッセージは送れません。
+                </div>
+              ) : (
+                <div style={{marginTop:4}}>
+                  <textarea
+                    rows={2}
+                    style={{width:'100%', padding:4, boxSizing:'border-box'}}
+                    placeholder="取引相手へのメッセージを入力"
+                    value={input}
+                    onChange={e=>setInputByOrder(prev=>({...prev, [o.id]: e.target.value}))}
+                  />
+                  <button
+                    style={{marginTop:4, padding:'4px 12px', cursor:'pointer'}}
+                    onClick={()=>sendMessage(o.id)}
+                  >
+                    送信
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-          <div>
-            商品: {o.title} ¥{o.price} 出品者ID:{o.seller_id} 購入者ID:{o.buyer_id}
-          </div>
-          <div style={{marginTop:4}}>
-            {o.myRole === 'seller' && o.status === 'CREATED' && (
-              <button onClick={()=>action(o.id,'ship')}>発送済みにする</button>
-            )}
-            {o.myRole === 'buyer' && o.status === 'SHIPPING' && (
-              <button onClick={()=>action(o.id,'deliver')}>到着済みにする</button>
-            )}
-            {o.myRole === 'buyer' && o.status === 'DELIVERED' && (
-              <button onClick={()=>action(o.id,'complete')}>受け取り評価済みにする</button>
-            )}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </Layout>
   );
 }
+
+
 
 
 function 管理(){
