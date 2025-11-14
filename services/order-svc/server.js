@@ -1,4 +1,5 @@
-﻿import express from 'express';
+﻿// order-svc/server.js
+import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
@@ -40,8 +41,7 @@ function authRequired(req,res,next){
 app.get('/health',(req,res)=>res.json({ok:true, service:'order-svc'}));
 
 /**
- * 購入
- * status: CREATED = 購入済み・発送待ち
+ * 購入: status = CREATED
  */
 app.post('/orders', authRequired, async (req,res)=>{
   const { listingId } = req.body || {};
@@ -51,7 +51,6 @@ app.post('/orders', authRequired, async (req,res)=>{
   try{
     await client.query('BEGIN');
 
-    // 出品をロックして状態確認
     const q1 = await client.query(
       'SELECT id,title,price,status,seller_id FROM listings WHERE id=$1 FOR UPDATE',
       [listingId]
@@ -62,25 +61,21 @@ app.post('/orders', authRequired, async (req,res)=>{
     }
     const l = q1.rows[0];
 
-    // 自分の出品は買えない
     if(l.seller_id === req.user.uid){
       await client.query('ROLLBACK');
       return res.status(403).json({error:'own_listing'});
     }
-    // Active 以外は購入不可
     if(l.status !== 'Active'){
       await client.query('ROLLBACK');
       return res.status(409).json({error:'not_active'});
     }
 
-    // 注文作成
     const q2 = await client.query(
       'INSERT INTO orders(listing_id,buyer_id,status) VALUES($1,$2,$3) RETURNING id,status,created_at',
       [listingId, req.user.uid, 'CREATED']
     );
     const o = q2.rows[0];
 
-    // 出品を Sold に
     await client.query(
       'UPDATE listings SET status=$1 WHERE id=$2',
       ['Sold', listingId]
@@ -92,7 +87,10 @@ app.post('/orders', authRequired, async (req,res)=>{
       id: o.id,
       status: o.status,
       created_at: o.created_at,
-      listing: { id: l.id, title: l.title, price: l.price, seller_id: l.seller_id },
+      listing_id: l.id,
+      title: l.title,
+      price: l.price,
+      seller_id: l.seller_id,
       buyer_id: req.user.uid
     });
 
@@ -128,7 +126,7 @@ app.get('/orders/buyer/me', authRequired, async (req,res)=>{
 });
 
 /**
- * 自分の出品が売れた注文一覧（発送・進行管理用）
+ * 自分の出品が売れた注文一覧
  */
 app.get('/orders/seller/me', authRequired, async (req,res)=>{
   try{
@@ -150,7 +148,48 @@ app.get('/orders/seller/me', authRequired, async (req,res)=>{
 });
 
 /**
- * 発送済みにする（出品者だけ）
+ * 取引詳細取得（買い手・売り手・admin 用）
+ * フロントの取引詳細画面はこれを使う
+ */
+app.get('/orders/:id', authRequired, async (req,res)=>{
+  const id = Number(req.params.id);
+  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+
+  try{
+    const q = await pool.query(
+      `SELECT
+         o.id,
+         o.status,
+         o.created_at,
+         o.buyer_id,
+         o.listing_id,
+         l.title,
+         l.price,
+         l.seller_id
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       WHERE o.id = $1`,
+      [id]
+    );
+    if(q.rowCount === 0) return res.status(404).json({error:'not_found'});
+    const o = q.rows[0];
+
+    // admin は全て閲覧可
+    if(req.user.role !== 'admin'){
+      if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
+        return res.status(403).json({error:'forbidden'});
+      }
+    }
+
+    return res.json(o);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+/**
+ * 発送済みにする（出品者）
  * CREATED -> SHIPPING
  */
 app.patch('/orders/:id/ship', authRequired, async (req,res)=>{
@@ -200,7 +239,7 @@ app.patch('/orders/:id/ship', authRequired, async (req,res)=>{
 });
 
 /**
- * 到着済みにする（買い手だけ）
+ * 到着済みにする（買い手）
  * SHIPPING -> DELIVERED
  */
 app.patch('/orders/:id/deliver', authRequired, async (req,res)=>{
@@ -245,7 +284,7 @@ app.patch('/orders/:id/deliver', authRequired, async (req,res)=>{
 });
 
 /**
- * 受け取り評価済みにする（買い手だけ）
+ * 受け取り評価完了（買い手）
  * DELIVERED -> COMPLETED
  */
 app.patch('/orders/:id/complete', authRequired, async (req,res)=>{
@@ -293,7 +332,6 @@ app.patch('/orders/:id/complete', authRequired, async (req,res)=>{
 // 取引メッセージ API
 // =========================
 
-// 取引メッセージ一覧
 app.get('/orders/:id/messages', authRequired, async (req,res)=>{
   const id = Number(req.params.id);
   if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
@@ -309,7 +347,6 @@ app.get('/orders/:id/messages', authRequired, async (req,res)=>{
     if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
     const o = q1.rows[0];
 
-    // admin は全て閲覧可、通常ユーザーは当事者のみ
     if(req.user.role !== 'admin'){
       if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
         return res.status(403).json({error:'forbidden'});
@@ -331,7 +368,6 @@ app.get('/orders/:id/messages', authRequired, async (req,res)=>{
   }
 });
 
-// 取引メッセージ投稿
 app.post('/orders/:id/messages', authRequired, async (req,res)=>{
   const id = Number(req.params.id);
   if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
@@ -351,17 +387,14 @@ app.post('/orders/:id/messages', authRequired, async (req,res)=>{
     if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
     const o = q1.rows[0];
 
-    // admin は書き込み禁止（監視専用）
     if(req.user.role === 'admin'){
       return res.status(403).json({error:'admin_view_only'});
     }
 
-    // 当事者チェック（買い手 or 売り手）
     if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
       return res.status(403).json({error:'forbidden'});
     }
 
-    // 完了後は書き込み禁止
     if(o.status === 'COMPLETED'){
       return res.status(409).json({error:'completed'});
     }
@@ -408,8 +441,6 @@ app.get('/orders/admin/all', authRequired, async (req,res)=>{
     return res.status(500).json({error:'server_error'});
   }
 });
-
-
 
 const PORT = process.env.PORT || 4020;
 app.listen(PORT, ()=>console.log('listening on', PORT));
