@@ -41,7 +41,8 @@ function authRequired(req,res,next){
 app.get('/health',(req,res)=>res.json({ok:true, service:'order-svc'}));
 
 /**
- * 購入: status = CREATED
+ * 購入
+ * status: CREATED = 購入済み・発送待ち
  */
 app.post('/orders', authRequired, async (req,res)=>{
   const { listingId } = req.body || {};
@@ -87,10 +88,7 @@ app.post('/orders', authRequired, async (req,res)=>{
       id: o.id,
       status: o.status,
       created_at: o.created_at,
-      listing_id: l.id,
-      title: l.title,
-      price: l.price,
-      seller_id: l.seller_id,
+      listing: { id: l.id, title: l.title, price: l.price, seller_id: l.seller_id },
       buyer_id: req.user.uid
     });
 
@@ -105,13 +103,14 @@ app.post('/orders', authRequired, async (req,res)=>{
 
 /**
  * 自分が買った注文一覧
+ * listings.image_url も返す
  */
 app.get('/orders/buyer/me', authRequired, async (req,res)=>{
   try{
     const q = await pool.query(
       `SELECT o.id, o.status, o.created_at,
               o.buyer_id,
-              l.id AS listing_id, l.title, l.price, l.seller_id
+              l.id AS listing_id, l.title, l.price, l.seller_id, l.image_url
        FROM orders o
        JOIN listings l ON o.listing_id = l.id
        WHERE o.buyer_id = $1
@@ -127,13 +126,14 @@ app.get('/orders/buyer/me', authRequired, async (req,res)=>{
 
 /**
  * 自分の出品が売れた注文一覧
+ * listings.image_url も返す
  */
 app.get('/orders/seller/me', authRequired, async (req,res)=>{
   try{
     const q = await pool.query(
       `SELECT o.id, o.status, o.created_at,
               o.buyer_id,
-              l.id AS listing_id, l.title, l.price, l.seller_id
+              l.id AS listing_id, l.title, l.price, l.seller_id, l.image_url
        FROM orders o
        JOIN listings l ON o.listing_id = l.id
        WHERE l.seller_id = $1
@@ -148,8 +148,8 @@ app.get('/orders/seller/me', authRequired, async (req,res)=>{
 });
 
 /**
- * 取引詳細取得（買い手・売り手・admin 用）
- * フロントの取引詳細画面はこれを使う
+ * 取引詳細
+ * image_url も含めて返す
  */
 app.get('/orders/:id', authRequired, async (req,res)=>{
   const id = Number(req.params.id);
@@ -162,10 +162,11 @@ app.get('/orders/:id', authRequired, async (req,res)=>{
          o.status,
          o.created_at,
          o.buyer_id,
-         o.listing_id,
+         l.id   AS listing_id,
          l.title,
          l.price,
-         l.seller_id
+         l.seller_id,
+         l.image_url
        FROM orders o
        JOIN listings l ON o.listing_id = l.id
        WHERE o.id = $1`,
@@ -174,7 +175,6 @@ app.get('/orders/:id', authRequired, async (req,res)=>{
     if(q.rowCount === 0) return res.status(404).json({error:'not_found'});
     const o = q.rows[0];
 
-    // admin は全て閲覧可
     if(req.user.role !== 'admin'){
       if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
         return res.status(403).json({error:'forbidden'});
@@ -189,7 +189,7 @@ app.get('/orders/:id', authRequired, async (req,res)=>{
 });
 
 /**
- * 発送済みにする（出品者）
+ * 発送済みにする（出品者だけ）
  * CREATED -> SHIPPING
  */
 app.patch('/orders/:id/ship', authRequired, async (req,res)=>{
@@ -239,7 +239,7 @@ app.patch('/orders/:id/ship', authRequired, async (req,res)=>{
 });
 
 /**
- * 到着済みにする（買い手）
+ * 到着済みにする（買い手だけ）
  * SHIPPING -> DELIVERED
  */
 app.patch('/orders/:id/deliver', authRequired, async (req,res)=>{
@@ -284,7 +284,7 @@ app.patch('/orders/:id/deliver', authRequired, async (req,res)=>{
 });
 
 /**
- * 受け取り評価完了（買い手）
+ * 完了にする（買い手だけ）
  * DELIVERED -> COMPLETED
  */
 app.patch('/orders/:id/complete', authRequired, async (req,res)=>{
@@ -413,7 +413,7 @@ app.post('/orders/:id/messages', authRequired, async (req,res)=>{
   }
 });
 
-// admin 用：全ての取引一覧
+// admin 用：全ての取引一覧（画像付き）
 app.get('/orders/admin/all', authRequired, async (req,res)=>{
   try{
     if(req.user.role !== 'admin'){
@@ -429,7 +429,8 @@ app.get('/orders/admin/all', authRequired, async (req,res)=>{
          o.created_at,
          l.title,
          l.price,
-         l.seller_id
+         l.seller_id,
+         l.image_url
        FROM orders o
        JOIN listings l ON o.listing_id = l.id
        ORDER BY o.id DESC`

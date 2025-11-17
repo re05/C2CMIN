@@ -96,8 +96,7 @@ function Layout({ children }){
   );
 }
 
-// ここから下は前回と同じ部分も多いですが、運営画面だけ注意して読んでください
-
+// ログイン
 function Login(){
   const nav = useNavigate();
   const [email,setEmail] = React.useState('test@test.com');
@@ -159,6 +158,7 @@ function Login(){
   );
 }
 
+// 新規登録
 function Register(){
   const nav = useNavigate();
   const [email,setEmail] = React.useState('');
@@ -228,8 +228,10 @@ function Register(){
   );
 }
 
+// マイページ（自分の出品＋画像表示）
 function MyPage(){
   const [mine,setMine] = React.useState([]);
+  const [loaded,setLoaded] = React.useState(false);
   const nav = useNavigate();
 
   React.useEffect(()=>{
@@ -238,28 +240,97 @@ function MyPage(){
       nav('/login');
       return;
     }
-    fetch(LISTING_URL + '/listings/mine', { headers: { ...authHeader() } })
-      .then(r => r.ok ? r.json() : [])
-      .then(setMine)
-      .catch(()=>setMine([]));
+
+    async function load(){
+      try{
+        // 自分情報
+        const meRes = await fetch(AUTH_URL + '/me', { headers:{...authHeader()} });
+        const me = meRes.ok ? await meRes.json() : null;
+        if(!me){
+          setMine([]);
+          setLoaded(true);
+          return;
+        }
+
+        // まず /listings/mine を試す
+        const mineRes = await fetch(LISTING_URL + '/listings/mine', { headers:{...authHeader()} });
+        let mineData = [];
+        if(mineRes.ok){
+          mineData = await mineRes.json();
+        }
+
+        // もし空配列 or 失敗なら /listings から seller_id で絞る
+        if(!mineRes.ok || !Array.isArray(mineData) || mineData.length === 0){
+          const allRes = await fetch(LISTING_URL + '/listings');
+          const all = allRes.ok ? await allRes.json() : [];
+          mineData = all.filter(x => x.seller_id === me.id);
+        }
+
+        setMine(mineData);
+        setLoaded(true);
+      }catch(e){
+        console.error(e);
+        setMine([]);
+        setLoaded(true);
+      }
+    }
+
+    load();
   },[]);
+
+  if(!loaded){
+    return (
+      <Layout>
+        <p>読み込み中...</p>
+      </Layout>
+    );
+  }
 
   return (
     <Layout>
       <h2>自分の出品</h2>
       {mine.length === 0 && <p>まだ出品がありません。</p>}
       {mine.map(x =>
-        <div key={x.id}>
-          #{x.id} {x.title} ¥{x.price} [{x.status}]
+        <div
+          key={x.id}
+          style={{
+            display:'flex',
+            gap:12,
+            alignItems:'center',
+            padding:'8px 0',
+            borderBottom:'1px solid #eee',
+            cursor:'pointer'
+          }}
+          onClick={()=>nav(`/listings/${x.id}`)}
+        >
+          {x.image_url && (
+            <img
+              src={LISTING_URL + x.image_url}
+              alt={x.title}
+              style={{width:80,height:80,objectFit:'cover',borderRadius:4,flexShrink:0}}
+            />
+          )}
+          <div>
+            <div>#{x.id} {x.title}</div>
+            <div>¥{x.price} [{x.status}]</div>
+            <div>
+              カテゴリ: {x.category}
+              {x.fashion_genre && ` / ジャンル:${x.fashion_genre}`}
+              {x.size && ` / サイズ:${x.size}`}
+            </div>
+          </div>
         </div>
       )}
     </Layout>
   );
 }
 
+
+// 出品一覧
 function ListingList(){
   const [items,setItems] = React.useState([]);
   const [me,setMe] = React.useState(null);
+  const nav = useNavigate();
 
   React.useEffect(()=>{
     fetch(LISTING_URL + '/listings')
@@ -276,6 +347,11 @@ function ListingList(){
   },[]);
 
   async function buy(id){
+    const t = getToken();
+    if(!t){
+      nav('/login');
+      return;
+    }
     const r = await fetch(ORDER_URL + '/orders', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', ...authHeader()},
@@ -306,44 +382,236 @@ function ListingList(){
     <Layout>
       <h2>出品一覧</h2>
       {items.map(x =>
-        <div key={x.id} style={{display:'flex', gap:8, alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee'}}>
-          <span>#{x.id} {x.title} ¥{x.price} [{x.status}]</span>
-          {me && me.id === x.seller_id && x.status === 'Active' && (
-            <button onClick={()=>del(x.id)}>削除</button>
+        <div
+          key={x.id}
+          style={{
+            display:'flex',
+            gap:12,
+            alignItems:'center',
+            padding:'8px 0',
+            borderBottom:'1px solid #eee',
+            cursor:'pointer'
+          }}
+          onClick={()=>nav(`/listings/${x.id}`)}
+        >
+          {x.image_url && (
+            <img
+              src={LISTING_URL + x.image_url}
+              alt={x.title}
+              style={{width:80,height:80,objectFit:'cover',borderRadius:4,flexShrink:0}}
+              onClick={(e)=>{ e.stopPropagation(); nav(`/listings/${x.id}`); }}
+            />
           )}
-          {(!me || me.id !== x.seller_id) && x.status === 'Active' && (
-            <button onClick={()=>buy(x.id)}>購入</button>
-          )}
-          {x.status !== 'Active' && <span>購入不可</span>}
+          <div style={{flex:1}}>
+            <div>#{x.id} {x.title}</div>
+            <div>¥{x.price} [{x.status}]</div>
+            <div>
+              カテゴリ: {x.category}
+              {x.fashion_genre && ` / ジャンル:${x.fashion_genre}`}
+              {x.size && ` / サイズ:${x.size}`}
+            </div>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {me && me.id === x.seller_id && x.status === 'Active' && (
+              <button
+                onClick={(e)=>{ e.stopPropagation(); del(x.id); }}
+              >
+                削除
+              </button>
+            )}
+            {(!me || me.id !== x.seller_id) && x.status === 'Active' && (
+              <button
+                onClick={(e)=>{ e.stopPropagation(); buy(x.id); }}
+              >
+                購入
+              </button>
+            )}
+            {x.status !== 'Active' && <span>購入不可</span>}
+          </div>
         </div>
       )}
     </Layout>
   );
 }
 
+// 商品詳細ページ（画像＋購入ボタン付き）
+function ListingDetail(){
+  const { id } = useParams();
+  const nav = useNavigate();
+  const [item,setItem] = React.useState(null);
+  const [me,setMe] = React.useState(null);
+  const [loaded,setLoaded] = React.useState(false);
+
+  React.useEffect(()=>{
+    fetch(LISTING_URL + `/listings/${id}`)
+      .then(r=>r.ok ? r.json() : null)
+      .then(setItem)
+      .finally(()=>setLoaded(true));
+
+    const t = getToken();
+    if(t){
+      fetch(AUTH_URL + '/me', { headers:{...authHeader()} })
+        .then(r=>r.ok ? r.json() : null)
+        .then(setMe)
+        .catch(()=>setMe(null));
+    }
+  },[id]);
+
+  async function buy(){
+    const t = getToken();
+    if(!t){
+      nav('/login');
+      return;
+    }
+    if(!item) return;
+    if(me && me.id === item.seller_id){
+      alert('自分の出品は購入できません');
+      return;
+    }
+    if(item.status !== 'Active'){
+      alert('この商品は購入できません');
+      return;
+    }
+    const r = await fetch(ORDER_URL + '/orders', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', ...authHeader()},
+      body: JSON.stringify({ listingId: Number(id) })
+    });
+    if(r.ok){
+      alert('購入しました');
+      nav('/orders');
+    }else{
+      alert('購入に失敗しました');
+    }
+  }
+
+  return (
+    <Layout>
+      {!loaded && <p>読み込み中...</p>}
+      {loaded && !item && <p>商品情報を取得できませんでした。</p>}
+      {item && (
+        <>
+          <h2>商品詳細</h2>
+          {item.image_url && (
+            <img
+              src={LISTING_URL + item.image_url}
+              alt={item.title}
+              style={{width:300,height:300,objectFit:'cover',borderRadius:8,marginBottom:16}}
+            />
+          )}
+          <p>商品名: {item.title}</p>
+          <p>価格: ¥{item.price}</p>
+          <p>状態: {item.condition}</p>
+          <p>カテゴリ: {item.category}</p>
+          {item.fashion_genre && <p>ファッションジャンル: {item.fashion_genre}</p>}
+          {item.size && <p>サイズ: {item.size}</p>}
+          <p>出品者ID: {item.seller_id}</p>
+          <p>ステータス: {item.status}</p>
+
+          {item.status === 'Active'
+            ? <button
+                style={{marginTop:12,padding:'8px 16px',cursor:'pointer'}}
+                onClick={buy}
+              >
+                購入
+              </button>
+            : <p style={{marginTop:12}}>この商品は購入できません。</p>
+}
+
+        </>
+      )}
+    </Layout>
+  );
+}
+
+// 出品フォーム（前のまま：画像必須）
 function Sell(){
   const nav = useNavigate();
-  const [title,setTitle] = React.useState('');
-  const [price,setPrice] = React.useState(1000);
+  const [title,setTitle]             = React.useState('');
+  const [price,setPrice]             = React.useState(1000);
+  const [imageFile,setImageFile]     = React.useState(null);
+  const [imagePreview,setImagePreview] = React.useState('');
+  const [condition,setCondition]       = React.useState('未使用に近い');
+  const [category,setCategory]         = React.useState('ファッション');
+  const [fashionGenre,setFashionGenre] = React.useState('');
+  const [size,setSize]                 = React.useState('');
+  const [err,setErr] = React.useState('');
 
   React.useEffect(()=>{
     const t = getToken();
     if(!t) nav('/login');
   },[]);
 
+  function onImageChange(e){
+    const file = e.target.files && e.target.files[0];
+    setImageFile(file || null);
+    if(file){
+      const url = URL.createObjectURL(file);
+      setImagePreview(url);
+    }else{
+      setImagePreview('');
+    }
+  }
+
+  function isFashion(cat){
+    return cat === 'ファッション';
+  }
+
+  function validate(){
+    if(!title.trim()) return 'タイトルを入力してください';
+    if(!price || Number(price) <= 0) return '価格を正しく入力してください';
+    if(!imageFile) return '商品画像を選択してください';
+    if(!condition) return '商品の状態を選択してください';
+    if(!category) return 'カテゴリを選択してください';
+    if(isFashion(category)){
+      if(!fashionGenre.trim()) return 'ファッションジャンルを入力してください';
+      if(!size.trim()) return 'サイズを入力してください';
+    }
+    return '';
+  }
+
   async function submit(e){
     e.preventDefault();
+    const msg = validate();
+    if(msg){
+      setErr(msg);
+      return;
+    }
+    setErr('');
+
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('price', String(price));
+    fd.append('condition', condition);
+    fd.append('category', category);
+    fd.append('fashion_genre', fashionGenre);
+    fd.append('size', size);
+    if(imageFile){
+      fd.append('image', imageFile);
+    }
+
     const r = await fetch(LISTING_URL + '/listings', {
       method: 'POST',
-      headers: {'Content-Type':'application/json', ...authHeader()},
-      body: JSON.stringify({ title, price: Number(price) })
+      headers: {
+        ...authHeader()
+      },
+      body: fd
     });
+
     if(r.ok){
       alert('出品しました');
       setTitle('');
       setPrice(1000);
+      setImageFile(null);
+      setImagePreview('');
+      setCondition('未使用に近い');
+      setCategory('ファッション');
+      setFashionGenre('');
+      setSize('');
       nav('/');
     }else{
+      const body = await r.json().catch(()=>null);
+      console.error('create listing failed', body);
       alert('出品に失敗しました');
     }
   }
@@ -356,11 +624,12 @@ function Sell(){
           <label>タイトル</label><br/>
           <input
             style={{padding:'8px',width:'260px'}}
-            placeholder="タイトル"
+            placeholder="商品タイトル"
             value={title}
             onChange={e=>setTitle(e.target.value)}
           />
         </div>
+
         <div style={{margin:'8px 0'}}>
           <label>価格</label><br/>
           <input
@@ -371,18 +640,89 @@ function Sell(){
             onChange={e=>setPrice(e.target.value)}
           />
         </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>商品画像</label><br/>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={onImageChange}
+          />
+          {imagePreview && (
+            <div style={{marginTop:8}}>
+              <img
+                src={imagePreview}
+                alt="preview"
+                style={{width:120,height:120,objectFit:'cover',borderRadius:4}}
+              />
+            </div>
+          )}
+        </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>商品の状態</label><br/>
+          <select
+            style={{padding:'8px',width:'260px'}}
+            value={condition}
+            onChange={e=>setCondition(e.target.value)}
+          >
+            <option value="新品・未使用">新品・未使用</option>
+            <option value="未使用に近い">未使用に近い</option>
+            <option value="目立った傷や汚れなし">目立った傷や汚れなし</option>
+            <option value="やや傷や汚れあり">やや傷や汚れあり</option>
+            <option value="傷や汚れあり">傷や汚れあり</option>
+          </select>
+        </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>カテゴリ</label><br/>
+          <select
+            style={{padding:'8px',width:'260px'}}
+            value={category}
+            onChange={e=>setCategory(e.target.value)}
+          >
+            <option value="ファッション">ファッション</option>
+            <option value="ベビー">ベビー</option>
+            <option value="ゲーム・おもちゃ">ゲーム・おもちゃ</option>
+            <option value="家電">家電</option>
+            <option value="本・マンガ">本・マンガ</option>
+            <option value="その他">その他</option>
+          </select>
+        </div>
+
+        {isFashion(category) && (
+          <>
+            <div style={{margin:'8px 0'}}>
+              <label>ファッションジャンル</label><br/>
+              <input
+                style={{padding:'8px',width:'260px'}}
+                placeholder="例: トップス / ボトムス など"
+                value={fashionGenre}
+                onChange={e=>setFashionGenre(e.target.value)}
+              />
+            </div>
+
+            <div style={{margin:'8px 0'}}>
+              <label>サイズ</label><br/>
+              <input
+                style={{padding:'8px',width:'260px'}}
+                placeholder="例: S / M / 27cm など"
+                value={size}
+                onChange={e=>setSize(e.target.value)}
+              />
+            </div>
+          </>
+        )}
+
+        {err && <p style={{color:'red'}}>{err}</p>}
+
         <button style={{padding:'8px 16px',cursor:'pointer'}}>出品する</button>
       </form>
     </Layout>
   );
 }
 
-// 以下、取引一覧・取引詳細・運営用画面は前回とほぼ同じなので省略せずそのまま使う
-// すでに動いているので大きな変更は入れていない
-
-// ...（前回渡した Orders, OrderDetail, AdminOrders はそのまま）...
-
-// 取引一覧（ユーザー）
+// 取引一覧（ユーザー）画像付き
 function Orders(){
   const [orders,setOrders] = React.useState([]);
   const [loaded,setLoaded] = React.useState(false);
@@ -417,15 +757,30 @@ function Orders(){
       <h2>取引一覧</h2>
       {orders.length === 0 && <p>まだ取引がありません。</p>}
       {orders.map(o =>
-        <div key={o.id} style={{padding:'6px 0', borderBottom:'1px solid #eee', cursor:'pointer'}}
-             onClick={()=>nav(`/orders/${o.id}`)}>
-          取引ID: {o.id} / 商品: {o.title} / 金額: ¥{o.price} / 状態: {o.status} / 役割: {o.role === 'buyer' ? '購入側' : '出品側'}
+        <div
+          key={o.id}
+          style={{display:'flex',gap:12,alignItems:'center',padding:'6px 0', borderBottom:'1px solid #eee', cursor:'pointer'}}
+          onClick={()=>nav(`/orders/${o.id}`)}
+        >
+          {o.image_url && (
+            <img
+              src={LISTING_URL + o.image_url}
+              alt={o.title}
+              style={{width:60,height:60,objectFit:'cover',borderRadius:4,flexShrink:0}}
+            />
+          )}
+          <div>
+            <div>取引ID: {o.id}</div>
+            <div>商品: {o.title}</div>
+            <div>金額: ¥{o.price} / 状態: {o.status} / 役割: {o.role === 'buyer' ? '購入側' : '出品側'}</div>
+          </div>
         </div>
       )}
     </Layout>
   );
 }
 
+// 取引詳細＋画像
 function OrderDetail(){
   const { id } = useParams();
   const [detail,setDetail] = React.useState(null);
@@ -486,6 +841,13 @@ function OrderDetail(){
       {detail && (
         <>
           <h2>取引詳細（ID: {detail.id}）</h2>
+          {detail.image_url && (
+            <img
+              src={LISTING_URL + detail.image_url}
+              alt={detail.title}
+              style={{width:200,height:200,objectFit:'cover',borderRadius:8,marginBottom:12}}
+            />
+          )}
           <p>商品: {detail.title}</p>
           <p>金額: ¥{detail.price}</p>
           <p>状態: {detail.status}</p>
@@ -598,7 +960,7 @@ function AdminListings(){
   );
 }
 
-// 運営用 取引一覧（全件）
+// 運営用 取引一覧（全件）画像付き
 function AdminOrders(){
   const [me,setMe] = React.useState(null);
   const [orders,setOrders] = React.useState([]);
@@ -635,10 +997,23 @@ function AdminOrders(){
       <h2>取引一覧（運営用・全件）</h2>
       {orders.length === 0 && <p>まだ取引がありません。</p>}
       {orders.map(o =>
-        <div key={o.id}
-             style={{padding:'6px 0', borderBottom:'1px solid #eee', cursor:'pointer'}}
-             onClick={()=>nav(`/orders/${o.id}`)}>
-          取引ID: {o.id} / 商品: {o.title} / 金額: ¥{o.price} / 状態: {o.status} / 出品者:{o.seller_id} / 購入者:{o.buyer_id}
+        <div
+          key={o.id}
+          style={{display:'flex',gap:12,alignItems:'center',padding:'6px 0', borderBottom:'1px solid #eee', cursor:'pointer'}}
+          onClick={()=>nav(`/orders/${o.id}`)}
+        >
+          {o.image_url && (
+            <img
+              src={LISTING_URL + o.image_url}
+              alt={o.title}
+              style={{width:60,height:60,objectFit:'cover',borderRadius:4,flexShrink:0}}
+            />
+          )}
+          <div>
+            <div>取引ID: {o.id}</div>
+            <div>商品: {o.title}</div>
+            <div>金額: ¥{o.price} / 状態: {o.status} / 出品者:{o.seller_id} / 購入者:{o.buyer_id}</div>
+          </div>
         </div>
       )}
     </Layout>
@@ -723,6 +1098,7 @@ const router = createBrowserRouter([
   { path: '/login',          element: <Login/> },
   { path: '/register',       element: <Register/> },
   { path: '/listings',       element: <ListingList/> },
+  { path: '/listings/:id',   element: <ListingDetail/> },
   { path: '/sell',           element: <Sell/> },
   { path: '/orders',         element: <Orders/> },
   { path: '/orders/:id',     element: <OrderDetail/> },
