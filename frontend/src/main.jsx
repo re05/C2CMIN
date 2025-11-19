@@ -330,13 +330,46 @@ function MyPage(){
 function ListingList(){
   const [items,setItems] = React.useState([]);
   const [me,setMe] = React.useState(null);
-  const nav = useNavigate();
+
+  const [keyword,setKeyword] = React.useState('');
+  const [category,setCategory] = React.useState('すべて');
+  const [loading,setLoading] = React.useState(false);
+
+  // カテゴリプルダウンの選択肢
+  const categories = [
+    'すべて',
+    'ファッション',
+    'ベビー・キッズ',
+    'ゲーム・おもちゃ',
+    'その他'
+  ];
+
+  async function fetchListings(params = {}){
+    setLoading(true);
+    try{
+      const usp = new URLSearchParams();
+      if(params.q) usp.set('q', params.q);
+      if(params.category && params.category !== 'すべて'){
+        usp.set('category', params.category);
+      }
+      const qs = usp.toString();
+      const url = LISTING_URL + '/listings' + (qs ? `?${qs}` : '');
+
+      const r = await fetch(url);
+      const data = r.ok ? await r.json() : [];
+      setItems(data);
+    }catch(e){
+      console.error(e);
+      setItems([]);
+    }finally{
+      setLoading(false);
+    }
+  }
 
   React.useEffect(()=>{
-    fetch(LISTING_URL + '/listings')
-      .then(r=>r.ok ? r.json() : [])
-      .then(setItems);
-
+    // 初回は全件
+    fetchListings({});
+    // ログインユーザー情報
     const t = getToken();
     if(t){
       fetch(AUTH_URL + '/me', { headers: { ...authHeader() } })
@@ -346,12 +379,12 @@ function ListingList(){
     }
   },[]);
 
+  async function onSearch(e){
+    e.preventDefault();
+    await fetchListings({ q: keyword, category });
+  }
+
   async function buy(id){
-    const t = getToken();
-    if(!t){
-      nav('/login');
-      return;
-    }
     const r = await fetch(ORDER_URL + '/orders', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', ...authHeader()},
@@ -359,7 +392,8 @@ function ListingList(){
     });
     if(r.ok){
       alert('購入しました');
-      location.reload();
+      // 現在の検索条件を維持して再読込
+      fetchListings({ q: keyword, category });
     }else{
       alert('購入できませんでした');
     }
@@ -372,104 +406,125 @@ function ListingList(){
     });
     if(r.ok){
       alert('削除しました');
-      location.reload();
+      fetchListings({ q: keyword, category });
     }else{
       alert('削除できませんでした');
     }
   }
 
+  const nav = useNavigate();
+
   return (
     <Layout>
       <h2>出品一覧</h2>
-      {items.map(x =>
+
+      <form onSubmit={onSearch} style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+        <input
+          style={{padding:'6px',minWidth:180}}
+          placeholder="キーワードで検索"
+          value={keyword}
+          onChange={e=>setKeyword(e.target.value)}
+        />
+        <select
+          style={{padding:'6px'}}
+          value={category}
+          onChange={e=>setCategory(e.target.value)}
+        >
+          {categories.map(c =>
+            <option key={c} value={c}>{c}</option>
+          )}
+        </select>
+        <button style={{padding:'6px 12px',cursor:'pointer'}}>検索</button>
+      </form>
+
+      {loading && <p>読み込み中...</p>}
+      {!loading && items.length === 0 && <p>該当する出品がありません。</p>}
+
+      {!loading && items.map(x =>
         <div
           key={x.id}
-          style={{
-            display:'flex',
-            gap:12,
-            alignItems:'center',
-            padding:'8px 0',
-            borderBottom:'1px solid #eee',
-            cursor:'pointer'
-          }}
-          onClick={()=>nav(`/listings/${x.id}`)}
+          style={{display:'flex', gap:8, alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee'}}
         >
+          {/* 画像があれば表示 */}
           {x.image_url && (
             <img
-              src={LISTING_URL + x.image_url}
+              src={x.image_url}
               alt={x.title}
-              style={{width:80,height:80,objectFit:'cover',borderRadius:4,flexShrink:0}}
-              onClick={(e)=>{ e.stopPropagation(); nav(`/listings/${x.id}`); }}
+              style={{width:60,height:60,objectFit:'cover',border:'1px solid #ccc'}}
+              onClick={()=>nav(`/listings/${x.id}`)}
             />
           )}
-          <div style={{flex:1}}>
+
+          <div style={{flex:1,cursor:'pointer'}} onClick={()=>nav(`/listings/${x.id}`)}>
             <div>#{x.id} {x.title}</div>
-            <div>¥{x.price} [{x.status}]</div>
-            <div>
-              カテゴリ: {x.category}
-              {x.fashion_genre && ` / ジャンル:${x.fashion_genre}`}
-              {x.size && ` / サイズ:${x.size}`}
-            </div>
+            <div>¥{x.price} [{x.status}]（{x.category}{x.fashion_genre ? ` / ${x.fashion_genre}` : ''}）</div>
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:4}}>
-            {me && me.id === x.seller_id && x.status === 'Active' && (
-              <button
-                onClick={(e)=>{ e.stopPropagation(); del(x.id); }}
-              >
-                削除
-              </button>
-            )}
-            {(!me || me.id !== x.seller_id) && x.status === 'Active' && (
-              <button
-                onClick={(e)=>{ e.stopPropagation(); buy(x.id); }}
-              >
-                購入
-              </button>
-            )}
-            {x.status !== 'Active' && <span>購入不可</span>}
-          </div>
+
+          {me && me.id === x.seller_id && x.status === 'Active' && (
+            <button onClick={()=>del(x.id)}>削除</button>
+          )}
+          {(!me || me.id !== x.seller_id) && x.status === 'Active' && (
+            <button onClick={()=>buy(x.id)}>購入</button>
+          )}
+          {x.status !== 'Active' && <span>購入不可</span>}
         </div>
       )}
     </Layout>
   );
 }
 
-// 商品詳細ページ（画像＋購入ボタン付き）
+
+// 商品詳細（コメント付き）
 function ListingDetail(){
   const { id } = useParams();
-  const nav = useNavigate();
   const [item,setItem] = React.useState(null);
+  const [comments,setComments] = React.useState([]);
+  const [text,setText] = React.useState('');
   const [me,setMe] = React.useState(null);
   const [loaded,setLoaded] = React.useState(false);
+  const nav = useNavigate();
 
   React.useEffect(()=>{
-    fetch(LISTING_URL + `/listings/${id}`)
-      .then(r=>r.ok ? r.json() : null)
-      .then(setItem)
-      .finally(()=>setLoaded(true));
+    async function load(){
+      try{
+        // 自分情報（コメント投稿可否に使う）
+        const t = getToken();
+        if(t){
+          const mr = await fetch(AUTH_URL + '/me',{ headers:{...authHeader()} });
+          const u  = mr.ok ? await mr.json() : null;
+          setMe(u);
+        }else{
+          setMe(null);
+        }
 
-    const t = getToken();
-    if(t){
-      fetch(AUTH_URL + '/me', { headers:{...authHeader()} })
-        .then(r=>r.ok ? r.json() : null)
-        .then(setMe)
-        .catch(()=>setMe(null));
+        // 商品本体
+        const r1 = await fetch(LISTING_URL + `/listings/${id}`);
+        if(r1.ok){
+          const d = await r1.json();
+          setItem(d);
+        }
+
+        // コメント一覧
+        const r2 = await fetch(LISTING_URL + `/listings/${id}/comments`);
+        if(r2.ok){
+          const c = await r2.json();
+          setComments(c);
+        }
+
+        setLoaded(true);
+      }catch(e){
+        console.error(e);
+        setLoaded(true);
+      }
     }
+    load();
   },[id]);
 
   async function buy(){
     const t = getToken();
     if(!t){
+      alert('購入するにはログインが必要です');
       nav('/login');
-      return;
-    }
-    if(!item) return;
-    if(me && me.id === item.seller_id){
-      alert('自分の出品は購入できません');
-      return;
-    }
-    if(item.status !== 'Active'){
-      alert('この商品は購入できません');
       return;
     }
     const r = await fetch(ORDER_URL + '/orders', {
@@ -481,48 +536,129 @@ function ListingDetail(){
       alert('購入しました');
       nav('/orders');
     }else{
-      alert('購入に失敗しました');
+      alert('購入できませんでした');
     }
   }
 
+  async function sendComment(e){
+    e.preventDefault();
+    if(!text.trim()) return;
+
+    const t = getToken();
+    if(!t){
+      alert('コメントするにはログインが必要です');
+      nav('/login');
+      return;
+    }
+
+    const r = await fetch(LISTING_URL + `/listings/${id}/comments`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json', ...authHeader()},
+      body: JSON.stringify({ body: text })
+    });
+    if(r.ok){
+      const c = await r.json();
+      setComments(prev => [...prev, c]);
+      setText('');
+    }else{
+      alert('コメント送信に失敗しました');
+    }
+  }
+
+  if(!loaded){
+    return (
+      <Layout>
+        <p>読み込み中...</p>
+      </Layout>
+    );
+  }
+
+  if(!item){
+    return (
+      <Layout>
+        <p>商品情報を取得できませんでした。</p>
+      </Layout>
+    );
+  }
+
+  const imageSrc = item.image_url
+    ? (item.image_url.startsWith('http') ? item.image_url : LISTING_URL + item.image_url)
+    : null;
+
   return (
     <Layout>
-      {!loaded && <p>読み込み中...</p>}
-      {loaded && !item && <p>商品情報を取得できませんでした。</p>}
-      {item && (
-        <>
-          <h2>商品詳細</h2>
-          {item.image_url && (
-            <img
-              src={LISTING_URL + item.image_url}
-              alt={item.title}
-              style={{width:300,height:300,objectFit:'cover',borderRadius:8,marginBottom:16}}
-            />
-          )}
-          <p>商品名: {item.title}</p>
+      <h2>商品詳細</h2>
+
+      <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
+        {imageSrc && (
+          <img
+            src={imageSrc}
+            alt={item.title}
+            style={{width:200,height:200,objectFit:'cover',borderRadius:4}}
+          />
+        )}
+        <div>
+          <h3>{item.title}</h3>
           <p>価格: ¥{item.price}</p>
           <p>状態: {item.condition}</p>
-          <p>カテゴリ: {item.category}</p>
-          {item.fashion_genre && <p>ファッションジャンル: {item.fashion_genre}</p>}
-          {item.size && <p>サイズ: {item.size}</p>}
+          <p>カテゴリ: {item.category}{item.fashion_genre ? ` / ジャンル:${item.fashion_genre}` : ''}{item.size ? ` / サイズ:${item.size}` : ''}</p>
           <p>出品者ID: {item.seller_id}</p>
           <p>ステータス: {item.status}</p>
 
           {item.status === 'Active'
-            ? <button
+            ? (
+              <button
                 style={{marginTop:12,padding:'8px 16px',cursor:'pointer'}}
                 onClick={buy}
               >
                 購入
               </button>
+            )
             : <p style={{marginTop:12}}>この商品は購入できません。</p>
-}
+          }
+        </div>
+      </div>
 
-        </>
+      <h3 style={{marginTop:24}}>商品へのコメント</h3>
+
+      {comments.length === 0 && <p>まだコメントはありません。</p>}
+      {comments.map(c =>
+        <div key={c.id} style={{borderBottom:'1px solid #eee',padding:'6px 0'}}>
+          <div style={{fontSize:13,color:'#555'}}>
+            ユーザーID: {c.user_id ?? c.sender_id}{' '}
+            {c.sender_email ? `(${c.sender_email})` : ''}
+          </div>
+          <div>{c.body}</div>
+          <div style={{fontSize:12,color:'#888'}}>
+            {new Date(c.created_at).toLocaleString()}
+          </div>
+        </div>
       )}
+
+      {me
+        ? (
+          <form onSubmit={sendComment} style={{marginTop:12}}>
+            <textarea
+              style={{width:'100%',height:80}}
+              placeholder="商品について質問やコメントを入力してください"
+              value={text}
+              onChange={e=>setText(e.target.value)}
+            />
+            <div style={{marginTop:8}}>
+              <button style={{padding:'6px 12px',cursor:'pointer'}}>コメントを送信</button>
+            </div>
+          </form>
+        )
+        : (
+          <p style={{marginTop:8}}>
+            コメントを投稿するにはログインしてください。
+          </p>
+        )
+      }
     </Layout>
   );
 }
+
 
 // 出品フォーム（前のまま：画像必須）
 function Sell(){
