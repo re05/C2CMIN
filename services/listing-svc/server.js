@@ -122,6 +122,101 @@ app.get('/listings/:id', async (req,res)=>{
   }
 });
 
+app.get('/listings/:id', async (req,res)=>{
+  const id = Number(req.params.id);
+  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+  try{
+    const r = await pool.query(
+      `SELECT id,title,price,status,seller_id,
+              image_url,condition,category,fashion_genre,size
+         FROM listings
+        WHERE id=$1`,
+      [id]
+    );
+    if(r.rowCount === 0) return res.status(404).json({error:'not_found'});
+    return res.json(r.rows[0]);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+// ここから追記 ↓↓↓
+
+// 商品のコメント一覧
+app.get('/listings/:id/comments', async (req,res)=>{
+  const id = Number(req.params.id);
+  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+
+  try{
+    const r = await pool.query(
+      `SELECT c.id,
+              c.body,
+              c.created_at,
+              c.author_id,
+              u.email AS author_email
+         FROM listing_comments c
+         JOIN users u ON c.author_id = u.id
+        WHERE c.listing_id = $1
+        ORDER BY c.created_at DESC`,
+      [id]
+    );
+    return res.json(r.rows);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+// 商品にコメントを追加（ログイン必須）
+app.post('/listings/:id/comments', authRequired, async (req,res)=>{
+  const id = Number(req.params.id);
+  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+
+  const body = (req.body && req.body.body || '').trim();
+  if(!body){
+    return res.status(400).json({error:'body_required'});
+  }
+
+  try{
+    // 該当商品が存在するかだけ確認
+    const lr = await pool.query(
+      'SELECT id FROM listings WHERE id=$1',
+      [id]
+    );
+    if(lr.rowCount === 0){
+      return res.status(404).json({error:'not_found'});
+    }
+
+    const r = await pool.query(
+      `INSERT INTO listing_comments(listing_id,author_id,body)
+       VALUES ($1,$2,$3)
+       RETURNING id,body,created_at,author_id`,
+      [id, req.user.uid, body]
+    );
+    const c = r.rows[0];
+
+    const ur = await pool.query(
+      'SELECT email FROM users WHERE id=$1',
+      [c.author_id]
+    );
+    const authorEmail = ur.rowCount ? ur.rows[0].email : null;
+
+    return res.status(201).json({
+      id: c.id,
+      body: c.body,
+      created_at: c.created_at,
+      author_id: c.author_id,
+      author_email: authorEmail
+    });
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:'server_error'});
+  }
+});
+
+
+
 /**
  * 自分の出品一覧
  */

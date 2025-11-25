@@ -243,7 +243,6 @@ function MyPage(){
 
     async function load(){
       try{
-        // 自分情報
         const meRes = await fetch(AUTH_URL + '/me', { headers:{...authHeader()} });
         const me = meRes.ok ? await meRes.json() : null;
         if(!me){
@@ -252,14 +251,12 @@ function MyPage(){
           return;
         }
 
-        // まず /listings/mine を試す
         const mineRes = await fetch(LISTING_URL + '/listings/mine', { headers:{...authHeader()} });
         let mineData = [];
         if(mineRes.ok){
           mineData = await mineRes.json();
         }
 
-        // もし空配列 or 失敗なら /listings から seller_id で絞る
         if(!mineRes.ok || !Array.isArray(mineData) || mineData.length === 0){
           const allRes = await fetch(LISTING_URL + '/listings');
           const all = allRes.ok ? await allRes.json() : [];
@@ -324,7 +321,6 @@ function MyPage(){
     </Layout>
   );
 }
-
 
 // 出品一覧
 function ListingList(){
@@ -434,7 +430,7 @@ function ListingList(){
   );
 }
 
-// 商品詳細ページ（画像＋購入ボタン付き）
+// 商品詳細ページ（画像＋購入ボタン付き＋コメント）
 function ListingDetail(){
   const { id } = useParams();
   const nav = useNavigate();
@@ -442,11 +438,22 @@ function ListingDetail(){
   const [me,setMe] = React.useState(null);
   const [loaded,setLoaded] = React.useState(false);
 
+  const [comments,setComments] = React.useState([]);
+  const [commentText,setCommentText] = React.useState('');
+  const [sending,setSending] = React.useState(false);
+
   React.useEffect(()=>{
+    setLoaded(false);
+
     fetch(LISTING_URL + `/listings/${id}`)
       .then(r=>r.ok ? r.json() : null)
       .then(setItem)
       .finally(()=>setLoaded(true));
+
+    fetch(LISTING_URL + `/listings/${id}/comments`)
+      .then(r=>r.ok ? r.json() : [])
+      .then(setComments)
+      .catch(()=>setComments([]));
 
     const t = getToken();
     if(t){
@@ -454,6 +461,8 @@ function ListingDetail(){
         .then(r=>r.ok ? r.json() : null)
         .then(setMe)
         .catch(()=>setMe(null));
+    }else{
+      setMe(null);
     }
   },[id]);
 
@@ -485,6 +494,42 @@ function ListingDetail(){
     }
   }
 
+  async function submitComment(e){
+    e.preventDefault();
+
+    const t = getToken();
+    if(!t){
+      nav('/login');
+      return;
+    }
+
+    const text = commentText.trim();
+    if(!text){
+      alert('コメントを入力してください');
+      return;
+    }
+
+    setSending(true);
+    try{
+      const r = await fetch(LISTING_URL + `/listings/${id}/comments`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', ...authHeader()},
+        body: JSON.stringify({ body: text })
+      });
+      if(!r.ok){
+        alert('コメントの送信に失敗しました');
+        return;
+      }
+      const newComment = await r.json();
+      setComments(prev => [newComment, ...prev]);
+      setCommentText('');
+    }catch(e){
+      alert('コメントの送信中にエラーが発生しました');
+    }finally{
+      setSending(false);
+    }
+  }
+
   return (
     <Layout>
       {!loaded && <p>読み込み中...</p>}
@@ -509,15 +554,55 @@ function ListingDetail(){
           <p>ステータス: {item.status}</p>
 
           {item.status === 'Active'
-            ? <button
+            ? (
+              <button
                 style={{marginTop:12,padding:'8px 16px',cursor:'pointer'}}
                 onClick={buy}
               >
                 購入
               </button>
+            )
             : <p style={{marginTop:12}}>この商品は購入できません。</p>
-}
+          }
 
+          <div style={{marginTop:24}}>
+            <h3>コメント</h3>
+
+            {comments.length === 0 && (
+              <p>まだコメントはありません。</p>
+            )}
+
+            {comments.length > 0 && (
+              <ul style={{listStyle:'none',padding:0}}>
+                {comments.map(c=>(
+                  <li key={c.id} style={{borderTop:'1px solid #ddd',padding:'8px 0'}}>
+                    <div style={{fontSize:12,color:'#555'}}>
+                      {c.author_email || `ユーザーID: ${c.author_id}`} /{' '}
+                      {new Date(c.created_at).toLocaleString()}
+                    </div>
+                    <div>{c.body}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <form onSubmit={submitComment} style={{marginTop:12}}>
+              <textarea
+                rows={3}
+                style={{width:'100%',padding:8,boxSizing:'border-box'}}
+                value={commentText}
+                onChange={e=>setCommentText(e.target.value)}
+                placeholder={me ? 'コメントを書く' : 'コメントを書くにはログインしてください'}
+              />
+              <button
+                type="submit"
+                disabled={sending || !commentText.trim()}
+                style={{marginTop:8,padding:'6px 12px',cursor:'pointer'}}
+              >
+                コメントを送信
+              </button>
+            </form>
+          </div>
         </>
       )}
     </Layout>
