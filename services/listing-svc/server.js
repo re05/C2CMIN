@@ -66,39 +66,63 @@ function authRequired(req,res,next){
 
 app.get('/health',(req,res)=>res.json({ok:true, service:'listing-svc'}));
 
-/**
- * 出品一覧（だれでも見られる）
- * ?q= タイトルあいまい検索
- */
-app.get('/listings', async (req,res)=>{
-  const q = (req.query.q || '').trim();
-  try{
-    let rows;
-    if(q){
-      const r = await pool.query(
-        `SELECT id,title,price,status,seller_id,
-                image_url,condition,category,fashion_genre,size
-           FROM listings
-          WHERE title ILIKE '%' || $1 || '%'
-          ORDER BY id DESC`,
-        [q]
-      );
-      rows = r.rows;
-    }else{
-      const r = await pool.query(
-        `SELECT id,title,price,status,seller_id,
-                image_url,condition,category,fashion_genre,size
-           FROM listings
-          ORDER BY id DESC`
-      );
-      rows = r.rows;
+// 一覧取得＋検索・絞り込み
+app.get('/listings', async (req, res) => {
+  try {
+    const { q, category, fashion_genre, size } = req.query;
+
+    const conds = [];
+    const params = [];
+
+    if (q && q.trim()) {
+      params.push('%' + q.trim() + '%');
+      conds.push(`title ILIKE $${params.length}`);
     }
-    return res.json(rows);
-  }catch(e){
+
+    if (category && category.trim()) {
+      params.push(category.trim());
+      conds.push(`category = $${params.length}`);
+    }
+
+    if (fashion_genre && fashion_genre.trim()) {
+      params.push(fashion_genre.trim());
+      conds.push(`fashion_genre = $${params.length}`);
+    }
+
+    if (size && size.trim()) {
+      params.push(size.trim());
+      conds.push(`size = $${params.length}`);
+    }
+
+    let sql = `
+      SELECT
+        id,
+        title,
+        price,
+        status,
+        seller_id,
+        image_url,
+        category,
+        fashion_genre,
+        size,
+        condition
+      FROM listings
+    `;
+
+    if (conds.length > 0) {
+      sql += ' WHERE ' + conds.join(' AND ');
+    }
+
+    sql += ' ORDER BY id DESC';
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) {
     console.error(e);
-    return res.status(500).json({error:'server_error'});
+    res.status(500).json({ error: 'failed to fetch listings' });
   }
 });
+
 
 /**
  * 単一出品（商品詳細）

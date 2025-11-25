@@ -322,17 +322,24 @@ function MyPage(){
   );
 }
 
-// 出品一覧
+// 出品一覧（検索付き）
+// 出品一覧（キーワード＋カテゴリ＋ジャンル＋サイズで絞り込み）
 function ListingList(){
   const [items,setItems] = React.useState([]);
   const [me,setMe] = React.useState(null);
+
+  const [keyword,setKeyword]         = React.useState('');
+  const [category,setCategory]       = React.useState('');
+  const [fashionGenre,setFashionGenre] = React.useState('');
+  const [size,setSize]               = React.useState('');
+
+  const [loading,setLoading] = React.useState(false);
+  const [err,setErr]         = React.useState('');
+
   const nav = useNavigate();
 
   React.useEffect(()=>{
-    fetch(LISTING_URL + '/listings')
-      .then(r=>r.ok ? r.json() : [])
-      .then(setItems);
-
+    loadList({});
     const t = getToken();
     if(t){
       fetch(AUTH_URL + '/me', { headers: { ...authHeader() } })
@@ -341,6 +348,45 @@ function ListingList(){
         .catch(()=>setMe(null));
     }
   },[]);
+
+  async function loadList(filters){
+    setLoading(true);
+    setErr('');
+
+    try{
+      const params = [];
+
+      if(filters.keyword && filters.keyword.trim()){
+        params.push('q=' + encodeURIComponent(filters.keyword.trim()));
+      }
+      if(filters.category){
+        params.push('category=' + encodeURIComponent(filters.category));
+      }
+      if(filters.fashion_genre && filters.fashion_genre.trim()){
+        params.push('fashion_genre=' + encodeURIComponent(filters.fashion_genre.trim()));
+      }
+      if(filters.size && filters.size.trim()){
+        params.push('size=' + encodeURIComponent(filters.size.trim()));
+      }
+
+      const qs = params.length ? '?' + params.join('&') : '';
+      const r  = await fetch(LISTING_URL + '/listings' + qs);
+
+      if(!r.ok){
+        setItems([]);
+        setErr('一覧の取得に失敗しました');
+        return;
+      }
+      const data = await r.json();
+      setItems(Array.isArray(data) ? data : []);
+    }catch(e){
+      console.error(e);
+      setItems([]);
+      setErr('一覧の取得中にエラーが発生しました');
+    }finally{
+      setLoading(false);
+    }
+  }
 
   async function buy(id){
     const t = getToken();
@@ -374,9 +420,85 @@ function ListingList(){
     }
   }
 
+  function onSubmitSearch(e){
+    e.preventDefault();
+    loadList({
+      keyword,
+      category,
+      fashion_genre: fashionGenre,
+      size
+    });
+  }
+
+  function onClear(){
+    setKeyword('');
+    setCategory('');
+    setFashionGenre('');
+    setSize('');
+    loadList({});
+  }
+
   return (
     <Layout>
       <h2>出品一覧</h2>
+
+      <form
+        onSubmit={onSubmitSearch}
+        style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',marginBottom:12}}
+      >
+        <input
+          style={{padding:'6px 8px',minWidth:200}}
+          placeholder="商品名で検索"
+          value={keyword}
+          onChange={e=>setKeyword(e.target.value)}
+        />
+
+        <select
+          style={{padding:'6px 8px'}}
+          value={category}
+          onChange={e=>setCategory(e.target.value)}
+        >
+          <option value="">カテゴリ指定なし</option>
+          <option value="ファッション">ファッション</option>
+          <option value="ベビー">ベビー</option>
+          <option value="ゲーム・おもちゃ">ゲーム・おもちゃ</option>
+          <option value="家電">家電</option>
+          <option value="本・マンガ">本・マンガ</option>
+          <option value="その他">その他</option>
+        </select>
+
+        <input
+          style={{padding:'6px 8px',width:160}}
+          placeholder="ジャンル（例: トップス）"
+          value={fashionGenre}
+          onChange={e=>setFashionGenre(e.target.value)}
+        />
+
+        <input
+          style={{padding:'6px 8px',width:120}}
+          placeholder="サイズ（例: M, 27cm）"
+          value={size}
+          onChange={e=>setSize(e.target.value)}
+        />
+
+        <button type="submit" style={{padding:'6px 12px',cursor:'pointer'}}>
+          絞り込み
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          style={{padding:'4px 10px',cursor:'pointer'}}
+        >
+          クリア
+        </button>
+      </form>
+
+      {loading && <p>読み込み中...</p>}
+      {err && <p style={{color:'red'}}>{err}</p>}
+      {!loading && items.length === 0 && !err && (
+        <p>該当する出品がありません。</p>
+      )}
+
       {items.map(x =>
         <div
           key={x.id}
@@ -429,6 +551,8 @@ function ListingList(){
     </Layout>
   );
 }
+
+
 
 // 商品詳細ページ（画像＋購入ボタン付き＋コメント）
 function ListingDetail(){
