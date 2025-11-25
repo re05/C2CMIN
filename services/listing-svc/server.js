@@ -182,7 +182,7 @@ app.get('/listings/:id/comments', async (req,res)=>{
          FROM listing_comments c
          JOIN users u ON c.author_id = u.id
         WHERE c.listing_id = $1
-        ORDER BY c.created_at DESC`,
+          ORDER BY c.created_at ASC`,
       [id]
     );
     return res.json(r.rows);

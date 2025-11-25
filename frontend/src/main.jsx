@@ -645,8 +645,9 @@ function ListingDetail(){
         return;
       }
       const newComment = await r.json();
-      setComments(prev => [newComment, ...prev]);
+      setComments(prev => [...prev, newComment]);
       setCommentText('');
+
     }catch(e){
       alert('コメントの送信中にエラーが発生しました');
     }finally{
