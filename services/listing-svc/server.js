@@ -3,10 +3,31 @@ import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
+
+// アップロード先ディレクトリ
+const uploadDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// multer 設定
+const storage = multer.diskStorage({
+  destination: (req,file,cb)=> cb(null, uploadDir),
+  filename: (req,file,cb)=>{
+    const ext = path.extname(file.originalname || '');
+    const base = path.basename(file.originalname || 'image', ext);
+    const safeBase = base.replace(/[^a-zA-Z0-9_\-]/g, '_');
+    cb(null, Date.now() + '_' + safeBase + ext);
+  }
+});
+const upload = multer({ storage });
 
 app.use(cors({
   origin: ['http://localhost:3000','http://localhost:3100'],
@@ -18,6 +39,9 @@ app.use(cors({
 app.options('*',(req,res)=>res.sendStatus(204));
 
 app.use(express.json());
+
+// アップロード画像を配信
+app.use('/uploads', express.static(uploadDir));
 
 const pool = new pg.Pool({
   host:     process.env.DB_HOST,
@@ -40,89 +64,52 @@ function authRequired(req,res,next){
   }
 }
 
-// ひらがな → カタカナ
-function hiraToKata(str){
-  return str.replace(/[\u3041-\u3096]/g, ch =>
-    String.fromCharCode(ch.charCodeAt(0) + 0x60)
-  );
-}
-
 app.get('/health',(req,res)=>res.json({ok:true, service:'listing-svc'}));
 
 /**
  * 出品一覧（だれでも見られる）
- * ?q= タイトルあいまい検索, ?category= カテゴリ絞り込み
- * どちらも未指定なら全件
+ * ?q= タイトルあいまい検索
  */
 app.get('/listings', async (req,res)=>{
-  const rawQ   = (req.query.q || '').trim();
-  const rawCat = (req.query.category || '').trim();
-
-  // 検索ワードは「元の文字列」と「カタカナ変換後」の両方を使う
-  const qH = rawQ;
-  const qK = hiraToKata(rawQ);
-  const hasQ = !!rawQ;
-
-  const cat = rawCat;  // category は画面のプルダウン固定値なのでそのまま
-
+  const q = (req.query.q || '').trim();
   try{
     let rows;
-
-    if(hasQ && cat){
+    if(q){
       const r = await pool.query(
-        `SELECT id,title,price,status,seller_id,image_url,category,fashion_genre
+        `SELECT id,title,price,status,seller_id,
+                image_url,condition,category,fashion_genre,size
            FROM listings
-          WHERE (title ILIKE '%' || $1 || '%' OR title ILIKE '%' || $2 || '%')
-            AND category = $3
+          WHERE title ILIKE '%' || $1 || '%'
           ORDER BY id DESC`,
-        [qH, qK, cat]
-      );
-      rows = r.rows;
-    }else if(hasQ){
-      const r = await pool.query(
-        `SELECT id,title,price,status,seller_id,image_url,category,fashion_genre
-           FROM listings
-          WHERE (title ILIKE '%' || $1 || '%' OR title ILIKE '%' || $2 || '%')
-          ORDER BY id DESC`,
-        [qH, qK]
-      );
-      rows = r.rows;
-    }else if(cat){
-      const r = await pool.query(
-        `SELECT id,title,price,status,seller_id,image_url,category,fashion_genre
-           FROM listings
-          WHERE category = $1
-          ORDER BY id DESC`,
-        [cat]
+        [q]
       );
       rows = r.rows;
     }else{
       const r = await pool.query(
-        `SELECT id,title,price,status,seller_id,image_url,category,fashion_genre
+        `SELECT id,title,price,status,seller_id,
+                image_url,condition,category,fashion_genre,size
            FROM listings
           ORDER BY id DESC`
       );
       rows = r.rows;
     }
-
     return res.json(rows);
-  }catch(err){
-    console.error(err);
+  }catch(e){
+    console.error(e);
     return res.status(500).json({error:'server_error'});
   }
 });
 
 /**
- * 出品1件取得（商品ページ用）
+ * 単一出品（商品詳細）
  */
 app.get('/listings/:id', async (req,res)=>{
   const id = Number(req.params.id);
   if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
-
   try{
     const r = await pool.query(
       `SELECT id,title,price,status,seller_id,
-              image_url,category,fashion_genre,size,condition
+              image_url,condition,category,fashion_genre,size
          FROM listings
         WHERE id=$1`,
       [id]
@@ -142,7 +129,7 @@ app.get('/listings/mine', authRequired, async (req,res)=>{
   try{
     const r = await pool.query(
       `SELECT id,title,price,status,seller_id,
-              image_url,category,fashion_genre,size,condition
+              image_url,condition,category,fashion_genre,size
          FROM listings
         WHERE seller_id = $1
         ORDER BY id DESC`,
@@ -157,13 +144,20 @@ app.get('/listings/mine', authRequired, async (req,res)=>{
 
 /**
  * 新規出品
- * 画像・カテゴリ・ファッションジャンル・サイズすべて必須
+ * 画像必須（multipart/form-data）
+ * フィールド:
+ *   title, price, condition, category, fashion_genre, size, image(file)
+ *   category=ファッションのとき fashion_genre/size も必須
  */
-app.post('/listings', authRequired, async (req,res)=>{
-  const { title, price, imageUrl, category, fashionGenre, size, condition } = req.body || {};
+app.post('/listings', authRequired, upload.single('image'), async (req,res)=>{
+  const { title, price, condition, category, fashion_genre, size } = req.body || {};
+  const file = req.file;
 
-  if(!title || price == null || !imageUrl || !category){
+  if(!title || price == null || !condition || !category){
     return res.status(400).json({error:'bad_request'});
+  }
+  if(!file){
+    return res.status(400).json({error:'image_required'});
   }
 
   const priceNum = Number(price);
@@ -171,25 +165,37 @@ app.post('/listings', authRequired, async (req,res)=>{
     return res.status(400).json({error:'bad_price'});
   }
 
-  // ファッションカテゴリの時はジャンル必須
-  if(category === 'ファッション' && !fashionGenre){
-    return res.status(400).json({error:'need_fashion_genre'});
+  const cat = category;
+  const isFashion = (cat === 'ファッション');
+  if(isFashion){
+    if(!fashion_genre || !fashion_genre.trim()){
+      return res.status(400).json({error:'fashion_genre_required'});
+    }
+    if(!size || !size.trim()){
+      return res.status(400).json({error:'size_required'});
+    }
   }
 
-  const cond = condition || '未使用に近い';
-  const fg   = fashionGenre || null;
-  const sz   = size || null;
+  const imagePath = '/uploads/' + path.basename(file.path);
 
   try{
     const q = await pool.query(
       `INSERT INTO listings
-         (title,price,status,seller_id,
-          image_url,category,fashion_genre,size,condition)
+       (title,price,status,seller_id,image_url,condition,category,fashion_genre,size)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
        RETURNING id,title,price,status,seller_id,
-                 image_url,category,fashion_genre,size,condition`,
-      [title, priceNum, 'Active', req.user.uid,
-       imageUrl, category, fg, sz, cond]
+                 image_url,condition,category,fashion_genre,size`,
+      [
+        title,
+        priceNum,
+        'Active',
+        req.user.uid,
+        imagePath,
+        condition,
+        category,
+        fashion_genre || null,
+        size || null
+      ]
     );
     return res.status(201).json(q.rows[0]);
   }catch(e){
@@ -207,7 +213,7 @@ app.delete('/listings/:id', authRequired, async (req,res)=>{
 
   try{
     const r = await pool.query(
-      `SELECT id,seller_id,status FROM listings WHERE id=$1`,
+      `SELECT id,seller_id,status,image_url FROM listings WHERE id=$1`,
       [id]
     );
     if(r.rowCount === 0) return res.status(404).json({error:'not_found'});
@@ -221,6 +227,12 @@ app.delete('/listings/:id', authRequired, async (req,res)=>{
     }
 
     await pool.query('DELETE FROM listings WHERE id=$1',[id]);
+
+    if(l.image_url){
+      const full = path.join(process.cwd(), l.image_url.replace(/^\/uploads\//,'uploads/'));
+      fs.unlink(full, ()=>{});
+    }
+
     return res.json({ok:true});
   }catch(e){
     console.error(e);
@@ -255,7 +267,7 @@ app.patch('/listings/:id/pause', authRequired, async (req,res)=>{
           SET status='Paused'
         WHERE id=$1
       RETURNING id,title,price,status,seller_id,
-                image_url,category,fashion_genre,size,condition`,
+                image_url,condition,category,fashion_genre,size`,
       [id]
     );
     return res.json(u.rows[0]);
@@ -292,71 +304,10 @@ app.patch('/listings/:id/activate', authRequired, async (req,res)=>{
           SET status='Active'
         WHERE id=$1
       RETURNING id,title,price,status,seller_id,
-                image_url,category,fashion_genre,size,condition`,
+                image_url,condition,category,fashion_genre,size`,
       [id]
     );
     return res.json(u.rows[0]);
-  }catch(e){
-    console.error(e);
-    return res.status(500).json({error:'server_error'});
-  }
-});
-
-/**
- * 商品コメント一覧
- */
-app.get('/listings/:id/comments', async (req,res)=>{
-  const id = Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
-
-  try{
-    const r = await pool.query(
-      `SELECT c.id,
-              c.listing_id,
-              c.user_id,
-              c.body,
-              c.created_at,
-              u.email AS user_email
-         FROM listing_comments c
-         JOIN users u ON c.user_id = u.id
-        WHERE c.listing_id = $1
-        ORDER BY c.id ASC`,
-      [id]
-    );
-    return res.json(r.rows);
-  }catch(e){
-    console.error(e);
-    return res.status(500).json({error:'server_error'});
-  }
-});
-
-/**
- * 商品コメント投稿
- */
-app.post('/listings/:id/comments', authRequired, async (req,res)=>{
-  const id = Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
-
-  const { body } = req.body || {};
-  const text = (body || '').trim();
-  if(!text){
-    return res.status(400).json({error:'empty'});
-  }
-
-  try{
-    const l = await pool.query(
-      `SELECT id FROM listings WHERE id=$1`,
-      [id]
-    );
-    if(l.rowCount === 0) return res.status(404).json({error:'not_found'});
-
-    const r = await pool.query(
-      `INSERT INTO listing_comments(listing_id,user_id,body)
-       VALUES($1,$2,$3)
-       RETURNING id,listing_id,user_id,body,created_at`,
-      [id, req.user.uid, text]
-    );
-    return res.status(201).json(r.rows[0]);
   }catch(e){
     console.error(e);
     return res.status(500).json({error:'server_error'});
