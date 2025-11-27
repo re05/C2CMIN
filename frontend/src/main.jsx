@@ -322,7 +322,6 @@ function MyPage(){
   );
 }
 
-// 出品一覧（検索付き）
 // 出品一覧（キーワード＋カテゴリ＋ジャンル＋サイズで絞り込み）
 function ListingList(){
   const [items,setItems] = React.useState([]);
@@ -552,9 +551,8 @@ function ListingList(){
   );
 }
 
-
-
-// 商品詳細ページ（画像＋購入ボタン付き＋コメント）
+// 商品詳細ページ（画像＋購入ボタン付き＋コメント＋編集ボタン）
+// 商品詳細ページ（画像＋購入ボタン付き＋コメント＋編集ボタン）
 function ListingDetail(){
   const { id } = useParams();
   const nav = useNavigate();
@@ -597,7 +595,7 @@ function ListingDetail(){
       return;
     }
     if(!item) return;
-    if(me && me.id === item.seller_id){
+    if(me && Number(me.id) === Number(item.seller_id)){
       alert('自分の出品は購入できません');
       return;
     }
@@ -655,6 +653,12 @@ function ListingDetail(){
     }
   }
 
+  // ここで「編集可能かどうか」を計算する
+  const canEdit =
+    item &&
+    me &&
+    (me.role === 'admin' || Number(me.id) === Number(item.seller_id));
+
   return (
     <Layout>
       {!loaded && <p>読み込み中...</p>}
@@ -678,17 +682,28 @@ function ListingDetail(){
           <p>出品者ID: {item.seller_id}</p>
           <p>ステータス: {item.status}</p>
 
-          {item.status === 'Active'
-            ? (
+          <div style={{marginTop:12, display:'flex', gap:8, alignItems:'center'}}>
+            {item.status === 'Active'
+              ? (
+                <button
+                  style={{padding:'8px 16px',cursor:'pointer'}}
+                  onClick={buy}
+                >
+                  購入
+                </button>
+              )
+              : <span>この商品は購入できません。</span>
+            }
+
+            {canEdit && (
               <button
-                style={{marginTop:12,padding:'8px 16px',cursor:'pointer'}}
-                onClick={buy}
+                style={{padding:'8px 16px',cursor:'pointer'}}
+                onClick={()=>nav(`/listings/${item.id}/edit`)}
               >
-                購入
+                出品内容を編集
               </button>
-            )
-            : <p style={{marginTop:12}}>この商品は購入できません。</p>
-          }
+            )}
+          </div>
 
           <div style={{marginTop:24}}>
             <h3>コメント</h3>
@@ -734,7 +749,8 @@ function ListingDetail(){
   );
 }
 
-// 出品フォーム（前のまま：画像必須）
+
+// 出品フォーム（新規出品）
 function Sell(){
   const nav = useNavigate();
   const [title,setTitle]             = React.useState('');
@@ -927,6 +943,276 @@ function Sell(){
         {err && <p style={{color:'red'}}>{err}</p>}
 
         <button style={{padding:'8px 16px',cursor:'pointer'}}>出品する</button>
+      </form>
+    </Layout>
+  );
+}
+
+// 出品編集フォーム（出品者または管理者用）
+function ListingEdit(){
+  const { id } = useParams();
+  const nav = useNavigate();
+
+  const [loading,setLoading] = React.useState(true);
+  const [item,setItem]       = React.useState(null);
+
+  const [title,setTitle]             = React.useState('');
+  const [price,setPrice]             = React.useState(1000);
+  const [imageFile,setImageFile]     = React.useState(null);
+  const [imagePreview,setImagePreview] = React.useState('');
+  const [condition,setCondition]       = React.useState('未使用に近い');
+  const [category,setCategory]         = React.useState('ファッション');
+  const [fashionGenre,setFashionGenre] = React.useState('');
+  const [size,setSize]                 = React.useState('');
+  const [err,setErr] = React.useState('');
+
+  React.useEffect(()=>{
+    const t = getToken();
+    if(!t){
+      nav('/login');
+      return;
+    }
+
+    async function load(){
+      try{
+        const [meRes, itemRes] = await Promise.all([
+          fetch(AUTH_URL + '/me', { headers:{...authHeader()} }),
+          fetch(LISTING_URL + `/listings/${id}`)
+        ]);
+
+        const me   = meRes.ok   ? await meRes.json()   : null;
+        const data = itemRes.ok ? await itemRes.json() : null;
+
+        if(!me){
+          nav('/login');
+          return;
+        }
+        if(!data){
+          setErr('商品情報の取得に失敗しました');
+          setLoading(false);
+          return;
+        }
+
+        const isOwner = Number(me.id) === Number(data.seller_id);
+        const isAdmin = me.role === 'admin';
+
+        if(!isOwner && !isAdmin){
+          setErr('この出品を編集する権限がありません');
+          setLoading(false);
+          return;
+        }
+
+
+        setItem(data);
+
+        setTitle(data.title || '');
+        setPrice(data.price || 1000);
+        setCondition(data.condition || '未使用に近い');
+        setCategory(data.category || 'ファッション');
+        setFashionGenre(data.fashion_genre || '');
+        setSize(data.size || '');
+        if(data.image_url){
+          setImagePreview(LISTING_URL + data.image_url);
+        }
+
+        setLoading(false);
+      }catch(e){
+        console.error(e);
+        setErr('商品情報の取得中にエラーが発生しました');
+        setLoading(false);
+      }
+    }
+
+    load();
+  },[id, nav]);
+
+  function onImageChange(e){
+    const file = e.target.files && e.target.files[0];
+    setImageFile(file || null);
+    if(file){
+      const url = URL.createObjectURL(file);
+      setImagePreview(url);
+    }
+  }
+
+  function isFashion(cat){
+    return cat === 'ファッション';
+  }
+
+  function validate(){
+    if(!title.trim()) return 'タイトルを入力してください';
+    if(!price || Number(price) <= 0) return '価格を正しく入力してください';
+    if(!condition) return '商品の状態を選択してください';
+    if(!category) return 'カテゴリを選択してください';
+    if(isFashion(category)){
+      if(!fashionGenre.trim()) return 'ファッションジャンルを入力してください';
+      if(!size.trim()) return 'サイズを入力してください';
+    }
+    return '';
+  }
+
+  async function submit(e){
+    e.preventDefault();
+    const msg = validate();
+    if(msg){
+      setErr(msg);
+      return;
+    }
+    setErr('');
+
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('price', String(price));
+    fd.append('condition', condition);
+    fd.append('category', category);
+    fd.append('fashion_genre', fashionGenre);
+    fd.append('size', size);
+    if(imageFile){
+      fd.append('image', imageFile);
+    }
+
+    try{
+      const r = await fetch(LISTING_URL + `/listings/${id}`, {
+        method: 'PUT',
+        headers: {
+          ...authHeader()
+        },
+        body: fd
+      });
+
+      if(r.ok){
+        alert('出品内容を更新しました');
+        nav(`/listings/${id}`);
+      }else if(r.status === 403){
+        alert('この出品を編集する権限がありません');
+      }else{
+        const body = await r.json().catch(()=>null);
+        console.error('update listing failed', body);
+        alert('出品内容の更新に失敗しました');
+      }
+    }catch(e){
+      console.error(e);
+      alert('出品内容の更新中にエラーが発生しました');
+    }
+  }
+
+  if(loading){
+    return (
+      <Layout>
+        <p>読み込み中...</p>
+      </Layout>
+    );
+  }
+
+  if(!item){
+    return (
+      <Layout>
+        <p>商品情報を取得できませんでした。</p>
+        {err && <p style={{color:'red'}}>{err}</p>}
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout>
+      <h2>出品内容の編集</h2>
+      {err && <p style={{color:'red'}}>{err}</p>}
+      <form onSubmit={submit}>
+        <div style={{margin:'8px 0'}}>
+          <label>タイトル</label><br/>
+          <input
+            style={{padding:'8px',width:'260px'}}
+            placeholder="商品タイトル"
+            value={title}
+            onChange={e=>setTitle(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>価格</label><br/>
+          <input
+            style={{padding:'8px',width:'260px'}}
+            type="number"
+            placeholder="価格"
+            value={price}
+            onChange={e=>setPrice(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>商品画像（変更したい場合のみ選択）</label><br/>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={onImageChange}
+          />
+          {imagePreview && (
+            <div style={{marginTop:8}}>
+              <img
+                src={imagePreview}
+                alt="preview"
+                style={{width:120,height:120,objectFit:'cover',borderRadius:4}}
+              />
+            </div>
+          )}
+        </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>商品の状態</label><br/>
+          <select
+            style={{padding:'8px',width:'260px'}}
+            value={condition}
+            onChange={e=>setCondition(e.target.value)}
+          >
+            <option value="新品・未使用">新品・未使用</option>
+            <option value="未使用に近い">未使用に近い</option>
+            <option value="目立った傷や汚れなし">目立った傷や汚れなし</option>
+            <option value="やや傷や汚れあり">やや傷や汚れあり</option>
+            <option value="傷や汚れあり">傷や汚れあり</option>
+          </select>
+        </div>
+
+        <div style={{margin:'8px 0'}}>
+          <label>カテゴリ</label><br/>
+          <select
+            style={{padding:'8px',width:'260px'}}
+            value={category}
+            onChange={e=>setCategory(e.target.value)}
+          >
+            <option value="ファッション">ファッション</option>
+            <option value="ベビー">ベビー</option>
+            <option value="ゲーム・おもちゃ">ゲーム・おもちゃ</option>
+            <option value="家電">家電</option>
+            <option value="本・マンガ">本・マンガ</option>
+            <option value="その他">その他</option>
+          </select>
+        </div>
+
+        {isFashion(category) && (
+          <>
+            <div style={{margin:'8px 0'}}>
+              <label>ファッションジャンル</label><br/>
+              <input
+                style={{padding:'8px',width:'260px'}}
+                placeholder="例: トップス / ボトムス など"
+                value={fashionGenre}
+                onChange={e=>setFashionGenre(e.target.value)}
+              />
+            </div>
+
+            <div style={{margin:'8px 0'}}>
+              <label>サイズ</label><br/>
+              <input
+                style={{padding:'8px',width:'260px'}}
+                placeholder="例: S / M / 27cm など"
+                value={size}
+                onChange={e=>setSize(e.target.value)}
+              />
+            </div>
+          </>
+        )}
+
+        <button style={{padding:'8px 16px',cursor:'pointer'}}>更新する</button>
       </form>
     </Layout>
   );
@@ -1309,6 +1595,7 @@ const router = createBrowserRouter([
   { path: '/register',       element: <Register/> },
   { path: '/listings',       element: <ListingList/> },
   { path: '/listings/:id',   element: <ListingDetail/> },
+  { path: '/listings/:id/edit', element: <ListingEdit/> },
   { path: '/sell',           element: <Sell/> },
   { path: '/orders',         element: <Orders/> },
   { path: '/orders/:id',     element: <OrderDetail/> },
