@@ -1277,6 +1277,7 @@ function Orders(){
 }
 
 // 取引詳細＋画像
+// 取引詳細＋画像＋状態管理＋メッセージ
 function OrderDetail(){
   const { id } = useParams();
   const [detail,setDetail] = React.useState(null);
@@ -1287,25 +1288,31 @@ function OrderDetail(){
 
   React.useEffect(()=>{
     const t = getToken();
-    if(!t) return;
+    if(!t){
+      setLoaded(true);
+      return;
+    }
 
     async function load(){
-      const meRes = await fetch(AUTH_URL + '/me',{headers:{...authHeader()}});
-      const meJson = meRes.ok ? await meRes.json() : null;
-      setMe(meJson);
+      try{
+        const meRes = await fetch(AUTH_URL + '/me',{headers:{...authHeader()}});
+        const meJson = meRes.ok ? await meRes.json() : null;
+        setMe(meJson);
 
-      const r1 = await fetch(ORDER_URL + `/orders/${id}`, { headers:{...authHeader()} });
-      if(r1.ok){
-        const d = await r1.json();
-        setDetail(d);
-      }
+        const r1 = await fetch(ORDER_URL + `/orders/${id}`, { headers:{...authHeader()} });
+        if(r1.ok){
+          const d = await r1.json();
+          setDetail(d);
+        }
 
-      const r2 = await fetch(ORDER_URL + `/orders/${id}/messages`, { headers:{...authHeader()} });
-      if(r2.ok){
-        const m = await r2.json();
-        setMessages(m);
+        const r2 = await fetch(ORDER_URL + `/orders/${id}/messages`, { headers:{...authHeader()} });
+        if(r2.ok){
+          const m = await r2.json();
+          setMessages(m);
+        }
+      }finally{
+        setLoaded(true);
       }
-      setLoaded(true);
     }
     load();
   },[id]);
@@ -1327,8 +1334,33 @@ function OrderDetail(){
     }
   }
 
+  // 発送・到着・受取確定 用
+  async function callAction(path){
+    if(!detail) return;
+    const r = await fetch(ORDER_URL + `/orders/${detail.id}/${path}`, {
+      method:'PATCH',
+      headers:{ ...authHeader() }
+    });
+    if(!r.ok){
+      const err = await r.json().catch(()=>null);
+      console.error(err);
+      alert('操作に失敗しました');
+      return;
+    }
+    const updated = await r.json();
+    // detail にマージして status や日時だけ更新する
+    setDetail(prev => prev ? ({ ...prev, ...updated }) : updated);
+  }
+
+  function fmt(dt){
+    if(!dt) return null;
+    return new Date(dt).toLocaleString();
+  }
+
   const isCompleted = detail && detail.status === 'COMPLETED';
   const isAdmin = me && me.role === 'admin';
+  const isSeller = me && detail && Number(me.id) === Number(detail.seller_id);
+  const isBuyer  = me && detail && Number(me.id) === Number(detail.buyer_id);
 
   return (
     <Layout>
@@ -1349,6 +1381,40 @@ function OrderDetail(){
           <p>状態: {detail.status}</p>
           <p>出品者: {detail.seller_id}</p>
           <p>購入者: {detail.buyer_id}</p>
+          {fmt(detail.created_at)   && <p>購入日時: {fmt(detail.created_at)}</p>}
+          {fmt(detail.shipped_at)   && <p>発送日時: {fmt(detail.shipped_at)}</p>}
+          {fmt(detail.delivered_at) && <p>到着報告日時: {fmt(detail.delivered_at)}</p>}
+          {fmt(detail.confirmed_at) && <p>受取確定日時: {fmt(detail.confirmed_at)}</p>}
+
+          {/* 取引状態管理ボタン */}
+          <div style={{marginTop:16, display:'flex', gap:8}}>
+            {isSeller && detail.status === 'CREATED' && (
+              <button
+                style={{padding:'6px 12px',cursor:'pointer'}}
+                onClick={()=>callAction('ship')}
+              >
+                発送済み
+              </button>
+            )}
+
+            {isBuyer && detail.status === 'SHIPPED' && (
+              <button
+                style={{padding:'6px 12px',cursor:'pointer'}}
+                onClick={()=>callAction('deliver')}
+              >
+                商品が到着した
+              </button>
+            )}
+
+            {isBuyer && detail.status === 'DELIVERED' && (
+              <button
+                style={{padding:'6px 12px',cursor:'pointer'}}
+                onClick={()=>callAction('complete')}
+              >
+                受取を確定する
+              </button>
+            )}
+          </div>
 
           <h3 style={{marginTop:24}}>メッセージ</h3>
           {messages.length === 0 && <p>まだメッセージはありません。</p>}
@@ -1382,6 +1448,7 @@ function OrderDetail(){
     </Layout>
   );
 }
+
 
 // 運営用 出品管理
 function AdminListings(){

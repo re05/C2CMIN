@@ -31,9 +31,11 @@ function authRequired(req,res,next){
   const [scheme, token] = h.split(' ');
   if(scheme !== 'Bearer' || !token) return res.status(401).json({error:'unauthorized'});
   try{
-    req.user = jwt.verify(token, process.env.JWT_SECRET); // uid, role, sub
+    // token には uid, role, sub が入っている想定
+    req.user = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret');
     next();
   }catch(e){
+    console.error('jwt verify error (order-svc)', e);
     return res.status(401).json({error:'unauthorized'});
   }
 }
@@ -72,7 +74,9 @@ app.post('/orders', authRequired, async (req,res)=>{
     }
 
     const q2 = await client.query(
-      'INSERT INTO orders(listing_id,buyer_id,status) VALUES($1,$2,$3) RETURNING id,status,created_at',
+      `INSERT INTO orders(listing_id,buyer_id,status)
+       VALUES($1,$2,$3)
+       RETURNING id,status,created_at`,
       [listingId, req.user.uid, 'CREATED']
     );
     const o = q2.rows[0];
@@ -149,20 +153,25 @@ app.get('/orders/seller/me', authRequired, async (req,res)=>{
 
 /**
  * 取引詳細
- * image_url も含めて返す
+ * image_url / 各タイミングの日時も返す
  */
-app.get('/orders/:id', authRequired, async (req,res)=>{
+app.get('/orders/:id', authRequired, async (req, res) => {
   const id = Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ error: 'bad_id' });
+  }
 
-  try{
+  try {
     const q = await pool.query(
       `SELECT
          o.id,
+         o.listing_id,
+         o.buyer_id,
          o.status,
          o.created_at,
-         o.buyer_id,
-         l.id   AS listing_id,
+         o.shipped_at,
+         o.delivered_at,
+         o.confirmed_at,
          l.title,
          l.price,
          l.seller_id,
@@ -172,161 +181,210 @@ app.get('/orders/:id', authRequired, async (req,res)=>{
        WHERE o.id = $1`,
       [id]
     );
-    if(q.rowCount === 0) return res.status(404).json({error:'not_found'});
+
+    if (q.rowCount === 0) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+
     const o = q.rows[0];
 
-    if(req.user.role !== 'admin'){
-      if(o.buyer_id !== req.user.uid && o.seller_id !== req.user.uid){
-        return res.status(403).json({error:'forbidden'});
-      }
+    // 自分が出品者でも購入者でもない場合は見せない
+    if (o.seller_id !== req.user.uid && o.buyer_id !== req.user.uid) {
+      return res.status(403).json({ error: 'forbidden' });
     }
 
     return res.json(o);
-  }catch(e){
+  } catch (e) {
     console.error(e);
-    return res.status(500).json({error:'server_error'});
+    return res.status(500).json({ error: 'server_error' });
   }
 });
 
 /**
- * 発送済みにする（出品者だけ）
- * CREATED -> SHIPPING
+ * 出品者が「発送した」と押す
+ * CREATED -> SHIPPED
  */
-app.patch('/orders/:id/ship', authRequired, async (req,res)=>{
+app.patch('/orders/:id/ship', authRequired, async (req, res) => {
   const id = Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ error: 'bad_id' });
+  }
 
   const client = await pool.connect();
-  try{
+  try {
     await client.query('BEGIN');
+
     const q = await client.query(
-      `SELECT o.id, o.status,
-              l.seller_id
+      `SELECT o.id, o.status, o.buyer_id, l.seller_id
        FROM orders o
        JOIN listings l ON o.listing_id = l.id
        WHERE o.id = $1
        FOR UPDATE`,
       [id]
     );
-    if(q.rowCount === 0){
+    if (q.rowCount === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({error:'not_found'});
+      return res.status(404).json({ error: 'not_found' });
     }
+
     const o = q.rows[0];
 
-    if(o.seller_id !== req.user.uid){
+    // 出品者以外は操作禁止
+    if (o.seller_id !== req.user.uid) {
       await client.query('ROLLBACK');
-      return res.status(403).json({error:'forbidden'});
+      return res.status(403).json({ error: 'forbidden' });
     }
-    if(o.status !== 'CREATED'){
+
+    // CREATED 以外からは発送に遷移させない
+    if (o.status !== 'CREATED') {
       await client.query('ROLLBACK');
-      return res.status(409).json({error:'invalid_status'});
+      return res.status(400).json({ error: 'bad_status' });
     }
 
     const u = await client.query(
-      'UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status',
-      ['SHIPPING', id]
+      `UPDATE orders
+       SET status = 'SHIPPED',
+           shipped_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
     );
+
     await client.query('COMMIT');
     return res.json(u.rows[0]);
-  }catch(e){
+  } catch (e) {
     await client.query('ROLLBACK');
     console.error(e);
-    return res.status(500).json({error:'server_error'});
-  }finally{
+    return res.status(500).json({ error: 'server_error' });
+  } finally {
     client.release();
   }
 });
+
 
 /**
  * 到着済みにする（買い手だけ）
- * SHIPPING -> DELIVERED
+ * SHIPPED -> DELIVERED
  */
-app.patch('/orders/:id/deliver', authRequired, async (req,res)=>{
+app.patch('/orders/:id/deliver', authRequired, async (req, res) => {
   const id = Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ error: 'bad_id' });
+  }
 
   const client = await pool.connect();
-  try{
+  try {
     await client.query('BEGIN');
+
     const q = await client.query(
-      `SELECT id,status,buyer_id FROM orders WHERE id=$1 FOR UPDATE`,
+      `SELECT o.id, o.status, o.buyer_id, l.seller_id
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       WHERE o.id = $1
+       FOR UPDATE`,
       [id]
     );
-    if(q.rowCount === 0){
+    if (q.rowCount === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({error:'not_found'});
+      return res.status(404).json({ error: 'not_found' });
     }
+
     const o = q.rows[0];
 
-    if(o.buyer_id !== req.user.uid){
+    // 購入者以外は操作禁止
+    if (o.buyer_id !== req.user.uid) {
       await client.query('ROLLBACK');
-      return res.status(403).json({error:'forbidden'});
+      return res.status(403).json({ error: 'forbidden' });
     }
-    if(o.status !== 'SHIPPING'){
+
+    // SHIPPED のときだけ DELIVERED に進める
+    if (o.status !== 'SHIPPED') {
       await client.query('ROLLBACK');
-      return res.status(409).json({error:'invalid_status'});
+      return res.status(400).json({ error: 'bad_status' });
     }
 
     const u = await client.query(
-      'UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status',
-      ['DELIVERED', id]
+      `UPDATE orders
+       SET status = 'DELIVERED',
+           delivered_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
     );
+
     await client.query('COMMIT');
     return res.json(u.rows[0]);
-  }catch(e){
+  } catch (e) {
     await client.query('ROLLBACK');
     console.error(e);
-    return res.status(500).json({error:'server_error'});
-  }finally{
+    return res.status(500).json({ error: 'server_error' });
+  } finally {
     client.release();
   }
 });
+
 
 /**
  * 完了にする（買い手だけ）
  * DELIVERED -> COMPLETED
  */
-app.patch('/orders/:id/complete', authRequired, async (req,res)=>{
+app.patch('/orders/:id/complete', authRequired, async (req, res) => {
   const id = Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({error:'bad_id'});
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ error: 'bad_id' });
+  }
 
   const client = await pool.connect();
-  try{
+  try {
     await client.query('BEGIN');
+
     const q = await client.query(
-      `SELECT id,status,buyer_id FROM orders WHERE id=$1 FOR UPDATE`,
+      `SELECT o.id, o.status, o.buyer_id, l.seller_id
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       WHERE o.id = $1
+       FOR UPDATE`,
       [id]
     );
-    if(q.rowCount === 0){
+    if (q.rowCount === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({error:'not_found'});
+      return res.status(404).json({ error: 'not_found' });
     }
+
     const o = q.rows[0];
 
-    if(o.buyer_id !== req.user.uid){
+    // 購入者以外は操作禁止
+    if (o.buyer_id !== req.user.uid) {
       await client.query('ROLLBACK');
-      return res.status(403).json({error:'forbidden'});
+      return res.status(403).json({ error: 'forbidden' });
     }
-    if(o.status !== 'DELIVERED'){
+
+    // DELIVERED のときだけ COMPLETED に進める
+    if (o.status !== 'DELIVERED') {
       await client.query('ROLLBACK');
-      return res.status(409).json({error:'invalid_status'});
+      return res.status(400).json({ error: 'bad_status' });
     }
 
     const u = await client.query(
-      'UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status',
-      ['COMPLETED', id]
+      `UPDATE orders
+       SET status = 'COMPLETED',
+           confirmed_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
     );
+
     await client.query('COMMIT');
     return res.json(u.rows[0]);
-  }catch(e){
+  } catch (e) {
     await client.query('ROLLBACK');
     console.error(e);
-    return res.status(500).json({error:'server_error'});
-  }finally{
+    return res.status(500).json({ error: 'server_error' });
+  } finally {
     client.release();
   }
 });
+
 
 // =========================
 // 取引メッセージ API
@@ -339,9 +397,9 @@ app.get('/orders/:id/messages', authRequired, async (req,res)=>{
   try{
     const q1 = await pool.query(
       `SELECT o.id, o.buyer_id, o.status, l.seller_id
-       FROM orders o
-       JOIN listings l ON o.listing_id = l.id
-       WHERE o.id = $1`,
+         FROM orders o
+         JOIN listings l ON o.listing_id = l.id
+        WHERE o.id = $1`,
       [id]
     );
     if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
@@ -355,9 +413,9 @@ app.get('/orders/:id/messages', authRequired, async (req,res)=>{
 
     const q2 = await pool.query(
       `SELECT id, order_id, sender_id, body, created_at
-       FROM order_messages
-       WHERE order_id = $1
-       ORDER BY id ASC`,
+         FROM order_messages
+        WHERE order_id = $1
+        ORDER BY id ASC`,
       [id]
     );
 
@@ -379,9 +437,9 @@ app.post('/orders/:id/messages', authRequired, async (req,res)=>{
   try{
     const q1 = await pool.query(
       `SELECT o.id, o.buyer_id, o.status, l.seller_id
-       FROM orders o
-       JOIN listings l ON o.listing_id = l.id
-       WHERE o.id = $1`,
+         FROM orders o
+         JOIN listings l ON o.listing_id = l.id
+        WHERE o.id = $1`,
       [id]
     );
     if(q1.rowCount === 0) return res.status(404).json({error:'not_found'});
@@ -427,6 +485,9 @@ app.get('/orders/admin/all', authRequired, async (req,res)=>{
          o.buyer_id,
          o.listing_id,
          o.created_at,
+         o.shipped_at,
+         o.delivered_at,
+         o.confirmed_at,
          l.title,
          l.price,
          l.seller_id,

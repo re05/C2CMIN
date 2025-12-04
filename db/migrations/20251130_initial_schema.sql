@@ -175,3 +175,13 @@ BEGIN
 END
 $$;
 
+-- 配送に合わせたステータスの種類を固定する
+ALTER TABLE public.orders
+  ADD CONSTRAINT IF NOT EXISTS orders_status_check
+  CHECK (status IN ('CREATED','SHIPPED','DELIVERED','COMPLETED'));
+
+-- 配送タイミングを記録するカラムを追加
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS shipped_at   TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
