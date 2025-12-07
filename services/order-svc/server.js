@@ -4,6 +4,7 @@ import cors from 'cors';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import crypto from 'crypto';   
 dotenv.config();
 
 const app = express();
@@ -40,6 +41,13 @@ function authRequired(req,res,next){
   }
 }
 
+function generateShippingCode() {
+  // C2C-と8桁のランダム16進数で簡単な発送コードを作る
+  const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return 'C2C-' + rand;
+}
+
+
 app.get('/health',(req,res)=>res.json({ok:true, service:'order-svc'}));
 
 /**
@@ -73,13 +81,58 @@ app.post('/orders', authRequired, async (req,res)=>{
       return res.status(409).json({error:'not_active'});
     }
 
+    // 今回はテスト用の固定配送情報
+    const shippingName        = '山田 蓮太';
+    const shippingPostalCode  = '150-0033';
+    const shippingAddress1    = '東京都渋谷区猿楽町17-9';
+    const shippingAddress2    = '';
+    const shippingPhone       = '080-6124-9832';
+
+    const shippingCode = generateShippingCode();
+
+    // まず orders に1件登録（個人情報は orders からは徐々に外していく）
     const q2 = await client.query(
-      `INSERT INTO orders(listing_id,buyer_id,status)
-       VALUES($1,$2,$3)
-       RETURNING id,status,created_at`,
-      [listingId, req.user.uid, 'CREATED']
+      `INSERT INTO orders(
+         listing_id,
+         buyer_id,
+         status,
+         shipping_code,
+         yamato_status
+       )
+       VALUES($1,$2,$3,$4,$5)
+       RETURNING id,status,created_at,shipping_code`,
+      [
+        listingId,
+        req.user.uid,
+        'CREATED',
+        shippingCode,
+        'PENDING'
+      ]
     );
     const o = q2.rows[0];
+
+    // 個人情報は shipping_labels にだけ保存する
+    await client.query(
+      `INSERT INTO shipping_labels(
+         code,
+         order_id,
+         name,
+         postal_code,
+         address1,
+         address2,
+         phone
+       )
+       VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        shippingCode,
+        o.id,
+        shippingName,
+        shippingPostalCode,
+        shippingAddress1,
+        shippingAddress2,
+        shippingPhone
+      ]
+    );
 
     await client.query(
       'UPDATE listings SET status=$1 WHERE id=$2',
@@ -92,6 +145,7 @@ app.post('/orders', authRequired, async (req,res)=>{
       id: o.id,
       status: o.status,
       created_at: o.created_at,
+      shipping_code: o.shipping_code,
       listing: { id: l.id, title: l.title, price: l.price, seller_id: l.seller_id },
       buyer_id: req.user.uid
     });
@@ -104,6 +158,7 @@ app.post('/orders', authRequired, async (req,res)=>{
     client.release();
   }
 });
+
 
 /**
  * 自分が買った注文一覧
@@ -172,6 +227,14 @@ app.get('/orders/:id', authRequired, async (req, res) => {
          o.shipped_at,
          o.delivered_at,
          o.confirmed_at,
+         o.shipping_name,
+         o.shipping_postal_code,
+         o.shipping_address1,
+         o.shipping_address2,
+         o.shipping_phone,
+         o.shipping_code,
+         o.yamato_tracking_no,
+         o.yamato_status,
          l.title,
          l.price,
          l.seller_id,
@@ -186,19 +249,47 @@ app.get('/orders/:id', authRequired, async (req, res) => {
       return res.status(404).json({ error: 'not_found' });
     }
 
-    const o = q.rows[0];
+    const row = q.rows[0];
 
-    // 自分が出品者でも購入者でもない場合は見せない
-    if (o.seller_id !== req.user.uid && o.buyer_id !== req.user.uid) {
+    // 当事者以外は見せない（admin は特例で許可）
+    if (
+      row.seller_id !== req.user.uid &&
+      row.buyer_id !== req.user.uid &&
+      req.user.role !== 'admin'
+    ) {
       return res.status(403).json({ error: 'forbidden' });
     }
 
-    return res.json(o);
+    // 個人情報は返さず、安全な情報だけを返す
+    const safe = {
+      id: row.id,
+      listing_id: row.listing_id,
+      buyer_id: row.buyer_id,
+      status: row.status,
+      created_at: row.created_at,
+      shipped_at: row.shipped_at,
+      delivered_at: row.delivered_at,
+      confirmed_at: row.confirmed_at,
+
+
+      // ヤマト関連の状態
+      yamato_tracking_no: row.yamato_tracking_no,
+      yamato_status: row.yamato_status,
+
+      // 商品情報
+      title: row.title,
+      price: row.price,
+      seller_id: row.seller_id,
+      image_url: row.image_url
+    };
+
+    return res.json(safe);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'server_error' });
   }
 });
+
 
 /**
  * 出品者が「発送した」と押す
@@ -503,6 +594,63 @@ app.get('/orders/admin/all', authRequired, async (req,res)=>{
     return res.status(500).json({error:'server_error'});
   }
 });
+
+// 発送コードから発送先情報を取得するAPI（ヤマト想定）
+// 認証なしでアクセスできる前提の設計例
+app.get('/shipping/:code', async (req, res) => {
+  const code = req.params.code || '';
+
+  if (!code) {
+    return res.status(400).json({ error: 'bad_code' });
+  }
+
+  try {
+    const q = await pool.query(
+      `SELECT
+         o.id          AS order_id,
+         o.shipping_name,
+         o.shipping_postal_code,
+         o.shipping_address1,
+         o.shipping_address2,
+         o.shipping_phone,
+         o.shipping_code,
+         o.yamato_tracking_no,
+         o.yamato_status,
+         l.id          AS listing_id,
+         l.title,
+         l.price
+       FROM orders o
+       JOIN listings l ON o.listing_id = l.id
+       WHERE o.shipping_code = $1`,
+      [code]
+    );
+
+    if (q.rowCount === 0) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+
+    const o = q.rows[0];
+
+    return res.json({
+      order_id:           o.order_id,
+      listing_id:         o.listing_id,
+      title:              o.title,
+      price:              o.price,
+      shipping_name:      o.shipping_name,
+      shipping_postal_code: o.shipping_postal_code,
+      shipping_address1:  o.shipping_address1,
+      shipping_address2:  o.shipping_address2,
+      shipping_phone:     o.shipping_phone,
+      shipping_code:      o.shipping_code,
+      yamato_tracking_no: o.yamato_tracking_no,
+      yamato_status:      o.yamato_status
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
 
 const PORT = process.env.PORT || 4020;
 app.listen(PORT, ()=>console.log('listening on', PORT));

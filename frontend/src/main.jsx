@@ -1278,6 +1278,7 @@ function Orders(){
 
 // 取引詳細＋画像
 // 取引詳細＋画像＋状態管理＋メッセージ
+// 取引詳細＋画像＋状態管理＋発送情報＋メッセージ
 function OrderDetail(){
   const { id } = useParams();
   const [detail,setDetail] = React.useState(null);
@@ -1341,20 +1342,44 @@ function OrderDetail(){
       method:'PATCH',
       headers:{ ...authHeader() }
     });
+
     if(!r.ok){
       const err = await r.json().catch(()=>null);
-      console.error(err);
-      alert('操作に失敗しました');
+      console.error('order action error', err);
+
+      if(err && err.error === 'forbidden'){
+        alert('出品者または購入者以外はこの操作はできません');
+      }else if(err && err.error === 'bad_status'){
+        alert('現在のステータスからはこの操作はできません');
+      }else if(err && err.error === 'not_found'){
+        alert('取引が見つかりませんでした');
+      }else{
+        alert('操作に失敗しました');
+      }
       return;
     }
+
     const updated = await r.json();
-    // detail にマージして status や日時だけ更新する
     setDetail(prev => prev ? ({ ...prev, ...updated }) : updated);
   }
+
 
   function fmt(dt){
     if(!dt) return null;
     return new Date(dt).toLocaleString();
+  }
+
+  // 追加: ヤマト状態を人間向けの表示にする
+  function labelYamatoStatus(s){
+    if(!s) return '未連携';
+    switch(s){
+      case 'PENDING':    return '受付待ち';
+      case 'PREPARED':   return '準備中';
+      case 'SHIPPED':    return '発送済み';
+      case 'IN_TRANSIT': return '配送中';
+      case 'DELIVERED':  return '配達完了';
+      default:           return s;
+    }
   }
 
   const isCompleted = detail && detail.status === 'COMPLETED';
@@ -1386,6 +1411,14 @@ function OrderDetail(){
           {fmt(detail.delivered_at) && <p>到着報告日時: {fmt(detail.delivered_at)}</p>}
           {fmt(detail.confirmed_at) && <p>受取確定日時: {fmt(detail.confirmed_at)}</p>}
 
+          {/* 発送情報: 発送コードと追跡番号は出さず、ヤマト状態だけ表示 */}
+          {(isSeller || isBuyer || isAdmin) && (
+            <div style={{marginTop:16, padding:12, border:'1px solid #ddd', borderRadius:8}}>
+              <h3>発送情報</h3>
+              <p>配送状況（ヤマト）: {labelYamatoStatus(detail.yamato_status)}</p>
+            </div>
+          )}
+
           {/* 取引状態管理ボタン */}
           <div style={{marginTop:16, display:'flex', gap:8}}>
             {isSeller && detail.status === 'CREATED' && (
@@ -1393,7 +1426,7 @@ function OrderDetail(){
                 style={{padding:'6px 12px',cursor:'pointer'}}
                 onClick={()=>callAction('ship')}
               >
-                発送済み
+                発送した
               </button>
             )}
 
@@ -1448,6 +1481,8 @@ function OrderDetail(){
     </Layout>
   );
 }
+
+
 
 
 // 運営用 出品管理

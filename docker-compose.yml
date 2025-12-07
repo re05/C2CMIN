@@ -74,6 +74,21 @@
     ports:
       - "3100:3000"
 
+  shipping-svc:
+    build:
+      context: ./shipping-svc
+    environment:
+      DB_HOST: db
+      DB_USER: myuser
+      DB_PASSWORD: mypass   
+      DB_NAME: mydb
+    depends_on:
+      - db
+    ports:
+      - "4030:4030"
+
+
+
 volumes:
   db_data:
 
