@@ -159,31 +159,65 @@ function Login(){
 }
 
 // 新規登録
+// 新規登録
 function Register(){
   const nav = useNavigate();
+
   const [email,setEmail] = React.useState('');
   const [password,setPassword] = React.useState('');
+
+  // ここから住所情報
+  const [fullName, setFullName]       = React.useState('');
+  const [postalCode, setPostalCode]   = React.useState('');
+  const [prefecture, setPrefecture]   = React.useState('');
+  const [city, setCity]               = React.useState('');
+  const [addressLine, setAddressLine] = React.useState('');
+  const [phone, setPhone]             = React.useState('');
+
   const [err,setErr] = React.useState('');
 
   async function onRegister(e){
     e.preventDefault();
     setErr('');
 
-    if(!email || !password){
-      setErr('メールアドレスとパスワードを入力してください');
+    // 必須チェック
+    if(
+      !email ||
+      !password ||
+      !fullName ||
+      !postalCode ||
+      !prefecture ||
+      !city ||
+      !addressLine ||
+      !phone
+    ){
+      setErr('すべての項目を入力してください');
       return;
     }
+
+    const body = {
+      email,
+      password,
+      fullName,
+      postalCode,
+      prefecture,
+      city,
+      addressLine,
+      phone
+    };
 
     const r = await fetch(AUTH_URL + '/register', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify(body)
     });
 
     if(!r.ok){
       const body = await r.json().catch(()=>null);
       if(body && body.error === 'exists'){
         setErr('このメールアドレスは既に登録されています');
+      }else if(body && body.error === 'bad_request'){
+        setErr('入力内容を確認してください');
       }else{
         setErr('登録に失敗しました');
       }
@@ -208,6 +242,7 @@ function Register(){
             onChange={e=>setEmail(e.target.value)}
           />
         </div>
+
         <div style={{margin: '8px 0'}}>
           <label>パスワード</label><br/>
           <input
@@ -218,6 +253,67 @@ function Register(){
             onChange={e=>setPassword(e.target.value)}
           />
         </div>
+
+        <div style={{margin: '8px 0'}}>
+          <label>氏名（配送用フルネーム）</label><br/>
+          <input
+            style={{padding: '8px', width: '260px'}}
+            placeholder="山田 太郎"
+            value={fullName}
+            onChange={e=>setFullName(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin: '8px 0'}}>
+          <label>郵便番号</label><br/>
+          <input
+            style={{padding: '8px', width: '260px'}}
+            placeholder="123-4567"
+            value={postalCode}
+            onChange={e=>setPostalCode(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin: '8px 0'}}>
+          <label>都道府県</label><br/>
+          <input
+            style={{padding: '8px', width: '260px'}}
+            placeholder="大阪府"
+            value={prefecture}
+            onChange={e=>setPrefecture(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin: '8px 0'}}>
+          <label>市区町村</label><br/>
+          <input
+            style={{padding: '8px', width: '260px'}}
+            placeholder="大阪市○○区"
+            value={city}
+            onChange={e=>setCity(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin: '8px 0'}}>
+          <label>番地・建物名</label><br/>
+          <input
+            style={{padding: '8px', width: '260px'}}
+            placeholder="1-2-3 ○○マンション101号室"
+            value={addressLine}
+            onChange={e=>setAddressLine(e.target.value)}
+          />
+        </div>
+
+        <div style={{margin: '8px 0'}}>
+          <label>電話番号</label><br/>
+          <input
+            style={{padding: '8px', width: '260px'}}
+            placeholder="09012345678"
+            value={phone}
+            onChange={e=>setPhone(e.target.value)}
+          />
+        </div>
+
         <button style={{padding:'8px 16px',cursor:'pointer'}}>登録する</button>
       </form>
       {err && <p style={{color:'red'}}>{err}</p>}
@@ -227,6 +323,7 @@ function Register(){
     </Layout>
   );
 }
+
 
 // マイページ（自分の出品＋画像表示）
 function MyPage(){

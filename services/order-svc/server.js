@@ -62,6 +62,7 @@ app.post('/orders', authRequired, async (req,res)=>{
   try{
     await client.query('BEGIN');
 
+    // 対象出品をロック付きで取得
     const q1 = await client.query(
       'SELECT id,title,price,status,seller_id FROM listings WHERE id=$1 FOR UPDATE',
       [listingId]
@@ -72,25 +73,40 @@ app.post('/orders', authRequired, async (req,res)=>{
     }
     const l = q1.rows[0];
 
+    // 自分の出品は買えない
     if(l.seller_id === req.user.uid){
       await client.query('ROLLBACK');
       return res.status(403).json({error:'own_listing'});
     }
+    // Active 以外は買えない
     if(l.status !== 'Active'){
       await client.query('ROLLBACK');
       return res.status(409).json({error:'not_active'});
     }
 
-    // 今回はテスト用の固定配送情報
-    const shippingName        = '山田 蓮太';
-    const shippingPostalCode  = '150-0033';
-    const shippingAddress1    = '東京都渋谷区猿楽町17-9';
-    const shippingAddress2    = '';
-    const shippingPhone       = '080-6124-9832';
+    // ここで購入者の住所情報を取得
+    const uq = await client.query(
+      `SELECT full_name, postal_code, prefecture, city, address_line, phone
+         FROM users
+        WHERE id = $1`,
+      [req.user.uid]
+    );
+    if (uq.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'user_not_found' });
+    }
+    const u = uq.rows[0];
+
+    // users テーブルからヤマト用の住所情報を組み立てる
+    const shippingName       = u.full_name;
+    const shippingPostalCode = u.postal_code;
+    const shippingAddress1   = `${u.prefecture}${u.city}${u.address_line}`;
+    const shippingAddress2   = '';   // 必要なら別途列を分ける
+    const shippingPhone      = u.phone;
 
     const shippingCode = generateShippingCode();
 
-    // まず orders に1件登録（個人情報は orders からは徐々に外していく）
+    // orders に登録（個人情報は orders には持たせない）
     const q2 = await client.query(
       `INSERT INTO orders(
          listing_id,
@@ -134,6 +150,7 @@ app.post('/orders', authRequired, async (req,res)=>{
       ]
     );
 
+    // 出品を Sold に更新
     await client.query(
       'UPDATE listings SET status=$1 WHERE id=$2',
       ['Sold', listingId]

@@ -72,14 +72,52 @@ app.post('/login', async (req,res)=>{
 });
 
 // 新規登録
-app.post('/register', async (req,res)=>{
-  const { email, password } = req.body || {};
-  if(!email || !password) return res.status(400).json({error:'bad_request'});
-  try{
+app.post('/register', async (req, res) => {
+  const {
+    email,
+    password,
+    fullName,
+    postalCode,
+    prefecture,
+    city,
+    addressLine,
+    phone
+  } = req.body || {};
+
+  // 必須チェック
+  if (
+    !email ||
+    !password ||
+    !fullName ||
+    !postalCode ||
+    !prefecture ||
+    !city ||
+    !addressLine ||
+    !phone
+  ) {
+    return res.status(400).json({ error: 'bad_request' });
+  }
+
+  try {
     const q = await pool.query(
-      'INSERT INTO users(email,password,role,disabled) VALUES($1,$2,$3,false) RETURNING id,email,role',
-      [email,password,'user']
+      `INSERT INTO users
+        (email, password, role, disabled,
+         full_name, postal_code, prefecture, city, address_line, phone)
+       VALUES ($1,$2,$3,false,$4,$5,$6,$7,$8,$9)
+       RETURNING id,email,role`,
+      [
+        email,
+        password,
+        'user',
+        fullName,
+        postalCode,
+        prefecture,
+        city,
+        addressLine,
+        phone
+      ]
     );
+
     const u = q.rows[0];
     const token = jwt.sign(
       { sub: u.email, role: u.role, uid: u.id },
@@ -87,12 +125,13 @@ app.post('/register', async (req,res)=>{
       { expiresIn: '7d' }
     );
     return res.status(201).json({ token });
-  }catch(e){
-    if(e.code === '23505') return res.status(409).json({error:'exists'});
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'exists' });
     console.error(e);
-    return res.status(500).json({error:'server_error'});
+    return res.status(500).json({ error: 'server_error' });
   }
 });
+
 
 // 自分の情報取得
 app.get('/me', authRequired, async (req,res)=>{

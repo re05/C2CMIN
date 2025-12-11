@@ -1,11 +1,18 @@
 -- ユーザー管理（auth-svc 用）
 CREATE TABLE users (
-  id         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  email      TEXT    NOT NULL UNIQUE,
-  password   TEXT    NOT NULL,
-  role       TEXT    NOT NULL DEFAULT 'user',
-  disabled   BOOLEAN NOT NULL DEFAULT FALSE
+  id           INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email        TEXT    NOT NULL UNIQUE,
+  password     TEXT    NOT NULL,
+  role         TEXT    NOT NULL DEFAULT 'user',
+  disabled     BOOLEAN NOT NULL DEFAULT FALSE,
+  full_name    TEXT,
+  postal_code  TEXT,
+  prefecture   TEXT,
+  city         TEXT,
+  address_line TEXT,
+  phone        TEXT
 );
+
 
 -- 出品情報（listing-svc 用）
 CREATE TABLE listings (
